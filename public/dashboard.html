@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>仪表板 - 公司内部系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dashboard-body">
+  <!-- 顶部导航 -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo-sm">LOGO</span>
+      <span class="brand-name">公司内部系统</span>
+    </div>
+    <nav class="topbar-nav" id="topbar-nav">
+      <a href="/chat.html" class="nav-link">AI 助手</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="user-name" id="user-name">加载中...</span>
+      <button id="logout-btn" class="btn-logout">退出登录</button>
+    </div>
+  </header>
+
+  <!-- 主内容 -->
+  <main class="dashboard-main">
+    <div class="welcome-card">
+      <h2>欢迎回来，<span id="welcome-name">...</span></h2>
+      <p>这是您的仪表板首页，后续功能模块将在这里添加。</p>
+    </div>
+
+    <div class="info-cards">
+      <div class="info-card">
+        <h3>用户信息</h3>
+        <div class="info-item"><span class="label">姓名：</span><span id="info-name">-</span></div>
+        <div class="info-item"><span class="label">邮箱：</span><span id="info-email">-</span></div>
+        <div class="info-item"><span class="label">角色：</span><span id="info-role">-</span></div>
+        <div class="info-item"><span class="label">最后登录：</span><span id="info-lastlogin">-</span></div>
+        <button id="change-pwd-btn" class="btn-primary" style="margin-top:16px;width:100%;">修改密码</button>
+      </div>
+      <div class="info-card">
+        <h3>系统通知</h3>
+        <p id="notice-text">登录成功，欢迎使用公司内部管理系统。</p>
+      </div>
+    </div>
+
+    <div class="info-cards" style="margin-top:20px;">
+      <div class="info-card quick-action" onclick="window.location.href='/admin.html'" id="admin-entry" style="display:none;cursor:pointer;">
+        <h3>用户管理</h3>
+        <p>管理所有用户账号，启用/禁用用户，重置密码</p>
+        <span class="card-arrow">&rarr;</span>
+      </div>
+      <div class="info-card quick-action" onclick="window.location.href='/chat.html'" style="cursor:pointer;">
+        <h3>AI 助手</h3>
+        <p>与AI智能助手对话，获取帮助和建议</p>
+        <span class="card-arrow">&rarr;</span>
+      </div>
+      <div class="info-card quick-action" id="change-pwd-card" style="cursor:pointer;">
+        <h3>账号安全</h3>
+        <p>定期修改密码，保护账号安全</p>
+        <span class="card-arrow">&rarr;</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- 修改密码弹窗 -->
+  <div class="modal-overlay" id="pwd-modal">
+    <div class="modal">
+      <h3>修改密码</h3>
+      <form id="change-pwd-form">
+        <label>旧密码</label>
+        <input type="password" id="old-pwd" placeholder="请输入旧密码" required autofocus>
+
+        <label>新密码</label>
+        <input type="password" id="new-pwd" placeholder="请输入新密码（至少6位）" required minlength="6">
+
+        <label>确认新密码</label>
+        <input type="password" id="confirm-pwd" placeholder="请再次输入新密码" required minlength="6">
+
+        <div id="pwd-error" class="error"></div>
+        <div id="pwd-success" class="success"></div>
+        <div class="modal-buttons">
+          <button type="button" id="cancel-pwd-btn" class="btn-secondary">取消</button>
+          <button type="submit" class="btn-primary">确认修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+
+    if (!token) {
+      window.location.href = '/login.html';
+    }
+
+    async function loadUser() {
+      try {
+        const res = await fetch('/api/me', {
+          headers: { 'Authorization': token }
+        });
+
+        if (!res.ok) {
+          localStorage.clear();
+          window.location.href = '/login.html';
+          return;
+        }
+
+        const data = await res.json();
+        const user = data.user;
+
+        document.getElementById('user-name').textContent = user.name;
+        document.getElementById('welcome-name').textContent = user.name;
+        document.getElementById('info-name').textContent = user.name;
+        document.getElementById('info-email').textContent = user.email;
+        document.getElementById('info-role').textContent = user.role === 'admin' ? '管理员' : '普通用户';
+        document.getElementById('info-lastlogin').textContent = user.lastLogin || '首次登录';
+
+        if (user.role === 'admin') {
+          document.getElementById('topbar-nav').innerHTML = '<a href="/chat.html" class="nav-link">AI 助手</a><a href="/admin.html" class="nav-link">用户管理</a>';
+          document.getElementById('admin-entry').style.display = 'block';
+        }
+      } catch (err) {
+        console.error('获取用户信息失败', err);
+      }
+    }
+
+    loadUser();
+
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.clear();
+      window.location.href = '/login.html';
+    });
+
+    // 修改密码弹窗
+    const modal = document.getElementById('pwd-modal');
+    const openModal = () => {
+      modal.classList.add('show');
+      document.getElementById('old-pwd').focus();
+    };
+    const closeModal = () => {
+      modal.classList.remove('show');
+      document.getElementById('change-pwd-form').reset();
+      document.getElementById('pwd-error').textContent = '';
+      document.getElementById('pwd-success').textContent = '';
+    };
+
+    document.getElementById('change-pwd-btn').addEventListener('click', openModal);
+    document.getElementById('change-pwd-card').addEventListener('click', openModal);
+    document.getElementById('cancel-pwd-btn').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    document.getElementById('change-pwd-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errorEl = document.getElementById('pwd-error');
+      const successEl = document.getElementById('pwd-success');
+      errorEl.textContent = '';
+      successEl.textContent = '';
+
+      const oldPassword = document.getElementById('old-pwd').value;
+      const newPassword = document.getElementById('new-pwd').value;
+      const confirmPwd = document.getElementById('confirm-pwd').value;
+
+      if (newPassword !== confirmPwd) {
+        errorEl.textContent = '两次输入的新密码不一致';
+        return;
+      }
+
+      const res = await fetch('/api/change-password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': token },
+        body: JSON.stringify({ oldPassword, newPassword })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        successEl.textContent = data.message;
+        setTimeout(closeModal, 1500);
+      } else {
+        errorEl.textContent = data.message;
+      }
+    });
+  </script>
+</body>
+</html>

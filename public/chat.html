@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 助手 - 公司内部系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dashboard-body">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo-sm">LOGO</span>
+      <span class="brand-name">公司内部系统</span>
+    </div>
+    <nav class="topbar-nav" id="topbar-nav">
+      <a href="/dashboard.html" class="nav-link">仪表板</a>
+      <a href="/chat.html" class="nav-link active">AI 助手</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="user-name" id="user-name">加载中...</span>
+      <button id="logout-btn" class="btn-logout">退出登录</button>
+    </div>
+  </header>
+
+  <div class="chat-layout">
+    <!-- 侧边栏 -->
+    <aside class="chat-sidebar">
+      <div class="chat-sidebar-header">
+        <button id="new-chat-btn" class="btn-primary" style="width:100%;">+ 新对话</button>
+      </div>
+      <div class="chat-sidebar-list" id="conversation-list">
+        <div style="text-align:center;color:var(--text-light);padding:20px;font-size:13px;">暂无对话</div>
+      </div>
+    </aside>
+
+    <!-- 主聊天区 -->
+    <section class="chat-main">
+      <div class="chat-main-header" id="chat-header">
+        <span id="chat-title-text">AI 助手</span>
+        <select id="model-select" class="model-select" title="选择模型"></select>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-empty" id="chat-empty">
+          <div class="chat-empty-icon">&#x1f4ac;</div>
+          <div>选择或创建一个对话开始聊天</div>
+        </div>
+      </div>
+
+      <!-- 加载指示器 -->
+      <div id="chat-loading" class="chat-loading" style="display:none;padding:4px 20px;">
+        <span>AI 正在思考</span>
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+      </div>
+
+      <div class="chat-input-area">
+        <input type="file" id="file-input" style="display:none" accept="image/*,.pdf,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json,.md">
+        <button id="attach-btn" class="chat-attach-btn" title="上传文件">+</button>
+        <textarea id="chat-input" class="chat-input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <button id="send-btn" class="chat-send-btn" disabled>发送</button>
+      </div>
+      <div id="file-preview" class="file-preview" style="display:none"></div>
+    </section>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('token');
+    if (!token) {
+      window.location.href = '/login.html';
+    }
+
+    let conversations = [];
+    let currentConversationId = null;
+    let isLoading = false;
+
+    const convListEl = document.getElementById('conversation-list');
+    const chatMessagesEl = document.getElementById('chat-messages');
+    const chatEmptyEl = document.getElementById('chat-empty');
+    const chatInputEl = document.getElementById('chat-input');
+    const sendBtnEl = document.getElementById('send-btn');
+    const chatLoadingEl = document.getElementById('chat-loading');
+    const chatTitleEl = document.getElementById('chat-title-text');
+    const newChatBtn = document.getElementById('new-chat-btn');
+    const modelSelectEl = document.getElementById('model-select');
+    const fileInputEl = document.getElementById('file-input');
+    const attachBtnEl = document.getElementById('attach-btn');
+    const filePreviewEl = document.getElementById('file-preview');
+    let selectedModel = '';
+    let pendingFiles = [];
+
+    // 加载模型列表
+    async function loadModels() {
+      try {
+        const res = await fetch('/api/models', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (data.success && data.models.length > 0) {
+          selectedModel = data.models[0];
+          modelSelectEl.innerHTML = data.models.map(m =>
+            `<option value="${m}">${m}</option>`
+          ).join('');
+          modelSelectEl.value = selectedModel;
+        }
+      } catch (err) { console.error('加载模型失败', err); }
+    }
+
+    modelSelectEl.addEventListener('change', () => {
+      selectedModel = modelSelectEl.value;
+    });
+
+    // 文件上传
+    attachBtnEl.addEventListener('click', () => fileInputEl.click());
+
+    fileInputEl.addEventListener('change', () => {
+      for (const file of fileInputEl.files) {
+        if (pendingFiles.length >= 5) { alert('最多上传5个文件'); break; }
+        pendingFiles.push(file);
+      }
+      fileInputEl.value = '';
+      renderFilePreview();
+    });
+
+    function renderFilePreview() {
+      if (pendingFiles.length === 0) {
+        filePreviewEl.style.display = 'none';
+        filePreviewEl.innerHTML = '';
+        return;
+      }
+      filePreviewEl.style.display = 'flex';
+      filePreviewEl.innerHTML = pendingFiles.map((f, i) => `
+        <span class="file-tag">
+          ${escapeHtml(f.name)} (${formatFileSize(f.size)})
+          <button class="file-tag-remove" onclick="pendingFiles.splice(${i},1);renderFilePreview();">&times;</button>
+        </span>
+      `).join('');
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + 'B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+      return (bytes / 1048576).toFixed(1) + 'MB';
+    }
+
+    async function uploadFiles() {
+      if (pendingFiles.length === 0) return [];
+      const formData = new FormData();
+      pendingFiles.forEach(f => formData.append('files', f));
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Authorization': token },
+        body: formData
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      return data.files;
+    }
+
+    // 初始化
+    async function init() {
+      try {
+        const res = await fetch('/api/me', { headers: { 'Authorization': token } });
+        if (!res.ok) { logout(); return; }
+        const data = await res.json();
+        document.getElementById('user-name').textContent = data.user.name;
+
+        if (data.user.role === 'admin') {
+          document.getElementById('topbar-nav').innerHTML =
+            '<a href="/dashboard.html" class="nav-link">仪表板</a>' +
+            '<a href="/chat.html" class="nav-link active">AI 助手</a>' +
+            '<a href="/admin.html" class="nav-link">用户管理</a>';
+        }
+      } catch (err) { logout(); }
+
+      // 加载模型列表
+      await loadModels();
+
+      // 启用输入
+      chatInputEl.disabled = false;
+      sendBtnEl.disabled = false;
+
+      await loadConversations();
+
+      // 检查URL参数
+      const params = new URLSearchParams(window.location.search);
+      const convId = params.get('id');
+      if (convId) {
+        await selectConversation(parseInt(convId));
+      }
+    }
+
+    async function loadConversations() {
+      try {
+        const res = await fetch('/api/conversations', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (data.success) {
+          conversations = data.conversations;
+          renderConversationList();
+        }
+      } catch (err) {
+        console.error('加载对话列表失败', err);
+      }
+    }
+
+    function renderConversationList() {
+      if (conversations.length === 0) {
+        convListEl.innerHTML = '<div style="text-align:center;color:var(--text-light);padding:20px;font-size:13px;">暂无对话</div>';
+        return;
+      }
+
+      convListEl.innerHTML = conversations.map(c => `
+        <div class="chat-conversation-item ${c.id === currentConversationId ? 'active' : ''}"
+             onclick="selectConversation(${c.id})">
+          <span class="conv-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+          <span class="conv-date">${formatDate(c.updatedAt)}</span>
+          <button class="conv-delete" title="删除对话"
+                  onclick="event.stopPropagation();deleteConversation(${c.id})">&times;</button>
+        </div>
+      `).join('');
+    }
+
+    async function selectConversation(convId) {
+      currentConversationId = convId;
+      renderConversationList();
+
+      try {
+        const res = await fetch(`/api/conversations/${convId}`, { headers: { 'Authorization': token } });
+        const data = await res.json();
+
+        if (!data.success) {
+          alert(data.message);
+          return;
+        }
+
+        chatTitleEl.textContent = data.conversation.title;
+        chatEmptyEl.style.display = 'none';
+        renderMessages(data.messages);
+
+        // 更新URL
+        history.replaceState(null, '', `?id=${convId}`);
+      } catch (err) {
+        console.error('加载对话失败', err);
+      }
+    }
+
+    function renderMessages(messages) {
+      chatMessagesEl.innerHTML = messages.map(m => `
+        <div class="chat-message ${m.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
+          <div class="chat-message-bubble">${escapeHtml(m.content)}</div>
+          <div class="chat-message-time">${formatTime(m.createdAt)}</div>
+        </div>
+      `).join('');
+      scrollToBottom();
+    }
+
+    async function sendMessage() {
+      const message = chatInputEl.value.trim();
+      const hasFiles = pendingFiles.length > 0;
+      if (!message && !hasFiles) return;
+      if (isLoading) return;
+
+      isLoading = true;
+      chatInputEl.disabled = true;
+      sendBtnEl.disabled = true;
+      attachBtnEl.disabled = true;
+      showLoading();
+
+      const isNewConversation = !currentConversationId;
+
+      try {
+        // 上传文件
+        let uploadedFiles = [];
+        if (hasFiles) {
+          uploadedFiles = await uploadFiles();
+        }
+
+        // 构建消息内容（含文件信息）
+        let fullMessage = message;
+        if (uploadedFiles.length > 0) {
+          const fileInfo = uploadedFiles.map(f => {
+            if (f.type.startsWith('image/')) return `[图片: ${f.name}](/${f.path})`;
+            return `[文件: ${f.name}](/${f.path})`;
+          }).join('\n');
+          fullMessage = fullMessage ? fullMessage + '\n' + fileInfo : fileInfo;
+        }
+
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': token },
+          body: JSON.stringify({
+            conversationId: currentConversationId || undefined,
+            message: fullMessage,
+            model: selectedModel
+          })
+        });
+
+        const data = await res.json();
+
+        if (!data.success) {
+          alert(data.message);
+          return;
+        }
+
+        chatEmptyEl.style.display = 'none';
+
+        if (isNewConversation) {
+          // 新对话：刷新列表并选中
+          currentConversationId = data.conversationId;
+          await loadConversations();
+          // 显示完整消息
+          const userMsg = data.userMessage;
+          const aiMsg = data.assistantMessage;
+          chatMessagesEl.innerHTML =
+            renderMessageHTML(userMsg) + renderMessageHTML(aiMsg);
+          chatTitleEl.textContent = message.substring(0, 30);
+          history.replaceState(null, '', `?id=${data.conversationId}`);
+        } else {
+          // 已有对话：追加消息
+          chatMessagesEl.insertAdjacentHTML('beforeend',
+            renderMessageHTML(data.userMessage) + renderMessageHTML(data.assistantMessage));
+          // 更新对话列表排序
+          await loadConversations();
+          // 重新高亮当前对话
+          renderConversationList();
+        }
+
+        chatInputEl.value = '';
+        chatInputEl.style.height = 'auto';
+        scrollToBottom();
+      } catch (err) {
+        alert('发送失败，请检查网络后重试');
+        console.error(err);
+      } finally {
+        isLoading = false;
+        chatInputEl.disabled = false;
+        sendBtnEl.disabled = false;
+        attachBtnEl.disabled = false;
+        pendingFiles = [];
+        renderFilePreview();
+        hideLoading();
+        chatInputEl.focus();
+      }
+    }
+
+    function renderMessageHTML(msg) {
+      return `
+        <div class="chat-message ${msg.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
+          <div class="chat-message-bubble">${escapeHtml(msg.content)}</div>
+          <div class="chat-message-time">${formatTime(msg.createdAt)}</div>
+        </div>`;
+    }
+
+    async function deleteConversation(convId) {
+      if (!confirm('确定要删除这个对话吗？')) return;
+
+      try {
+        const res = await fetch(`/api/conversations/${convId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': token }
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          if (currentConversationId === convId) {
+            // 切换到其他对话或显示空状态
+            currentConversationId = null;
+            chatMessagesEl.innerHTML = '';
+            chatEmptyEl.style.display = 'flex';
+            chatTitleEl.textContent = 'AI 助手';
+            history.replaceState(null, '', '/chat.html');
+          }
+          await loadConversations();
+        } else {
+          alert(data.message);
+        }
+      } catch (err) {
+        console.error('删除失败', err);
+      }
+    }
+
+    // 新建对话
+    newChatBtn.addEventListener('click', () => {
+      currentConversationId = null;
+      chatMessagesEl.innerHTML = '';
+      chatEmptyEl.style.display = 'flex';
+      chatTitleEl.textContent = '新对话';
+      renderConversationList();
+      history.replaceState(null, '', '/chat.html');
+      chatInputEl.focus();
+    });
+
+    // 发送按钮
+    sendBtnEl.addEventListener('click', sendMessage);
+
+    // Enter发送, Shift+Enter换行
+    chatInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // 自动调整输入框高度
+    chatInputEl.addEventListener('input', () => {
+      chatInputEl.style.height = 'auto';
+      chatInputEl.style.height = Math.min(chatInputEl.scrollHeight, 120) + 'px';
+    });
+
+    // 滚动
+    function scrollToBottom() {
+      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
+    function showLoading() {
+      chatLoadingEl.style.display = 'flex';
+      scrollToBottom();
+    }
+
+    function hideLoading() {
+      chatLoadingEl.style.display = 'none';
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      const d = new Date(dateStr.replace(' ', 'T') + '+08:00');
+      const now = new Date();
+      if (d.toDateString() === now.toDateString()) {
+        return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      }
+      return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+    }
+
+    function formatTime(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr.replace(' ', 'T') + '+08:00');
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function logout() {
+      localStorage.clear();
+      window.location.href = '/login.html';
+    }
+
+    document.getElementById('logout-btn').addEventListener('click', logout);
+
+    init();
+  </script>
+</body>
+</html>

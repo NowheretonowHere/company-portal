@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>用户管理 - 公司内部系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dashboard-body">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo-sm">LOGO</span>
+      <span class="brand-name">公司内部系统</span>
+    </div>
+    <nav class="topbar-nav">
+      <a href="/dashboard.html" class="nav-link">仪表板</a>
+      <a href="/chat.html" class="nav-link">AI 助手</a>
+      <a href="/admin.html" class="nav-link active">用户管理</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="user-name" id="user-name">加载中...</span>
+      <button id="logout-btn" class="btn-logout">退出登录</button>
+    </div>
+  </header>
+
+  <main class="dashboard-main">
+    <div class="admin-header">
+      <h2>用户管理</h2>
+      <span class="user-count" id="user-count"></span>
+    </div>
+
+    <div id="message" class="admin-message"></div>
+
+    <div class="table-wrapper">
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>姓名</th>
+            <th>邮箱</th>
+            <th>角色</th>
+            <th>状态</th>
+            <th>最后登录</th>
+            <th>注册时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="user-table-body">
+          <tr><td colspan="8" class="table-loading">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const token = localStorage.getItem('token');
+    let currentUserId = null;
+
+    if (!token) {
+      window.location.href = '/login.html';
+    }
+
+    async function checkAdmin() {
+      try {
+        const res = await fetch('/api/me', { headers: { 'Authorization': token } });
+        if (!res.ok) { window.location.href = '/login.html'; return; }
+        const data = await res.json();
+        if (data.user.role !== 'admin') {
+          alert('无权限访问');
+          window.location.href = '/dashboard.html';
+          return;
+        }
+        currentUserId = data.user.id;
+        document.getElementById('user-name').textContent = data.user.name;
+        loadUsers();
+      } catch (err) {
+        window.location.href = '/login.html';
+      }
+    }
+
+    async function loadUsers() {
+      const res = await fetch('/api/admin/users', { headers: { 'Authorization': token } });
+      const data = await res.json();
+
+      if (!data.success) {
+        window.location.href = '/login.html';
+        return;
+      }
+
+      document.getElementById('user-count').textContent = `共 ${data.users.length} 个用户`;
+
+      const tbody = document.getElementById('user-table-body');
+      tbody.innerHTML = data.users.map(u => `
+        <tr class="${u.status === 'disabled' ? 'row-disabled' : ''}">
+          <td>${u.id}</td>
+          <td>${u.name}</td>
+          <td>${u.email}</td>
+          <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">${u.role === 'admin' ? '管理员' : '用户'}</span></td>
+          <td><span class="badge ${u.status === 'active' ? 'badge-active' : 'badge-disabled'}">${u.status === 'active' ? '正常' : '已禁用'}</span></td>
+          <td>${u.lastLogin || '-'}</td>
+          <td>${u.createdAt || '-'}</td>
+          <td class="action-cell">
+            ${u.id !== currentUserId ? `
+              <button class="btn-action" onclick="toggleStatus(${u.id}, '${u.status}')">
+                ${u.status === 'active' ? '禁用' : '启用'}
+              </button>
+              <button class="btn-action" onclick="changeRole(${u.id}, '${u.role}', '${u.name}')">
+                ${u.role === 'admin' ? '改为用户' : '设为管理'}
+              </button>
+              <button class="btn-action btn-reset" onclick="resetPassword(${u.id}, '${u.name}')">重置密码</button>
+              <button class="btn-action btn-danger" onclick="deleteUser(${u.id}, '${u.name}')">删除</button>
+            ` : '<span class="text-muted">当前账号</span>'}
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function toggleStatus(userId, currentStatus) {
+      const newStatus = currentStatus === 'active' ? 'disabled' : 'active';
+      if (!confirm(`确定要${newStatus === 'active' ? '启用' : '禁用'}该用户吗？`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': token },
+        body: JSON.stringify({ status: newStatus })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        loadUsers();
+      } else {
+        alert(data.message);
+      }
+    }
+
+    async function changeRole(userId, currentRole, userName) {
+      const newRole = currentRole === 'admin' ? 'user' : 'admin';
+      if (!confirm(`确定要将 ${userName} 的角色修改为「${newRole === 'admin' ? '管理员' : '普通用户'}」吗？`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': token },
+        body: JSON.stringify({ role: newRole })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showMessage(data.message);
+        loadUsers();
+      } else {
+        alert(data.message);
+      }
+    }
+
+    async function deleteUser(userId, userName) {
+      if (!confirm(`确定要永久删除用户「${userName}」吗？\n此操作不可撤销！`)) return;
+      if (!confirm(`再次确认：删除用户「${userName}」？`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': token }
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showMessage(data.message);
+        loadUsers();
+      } else {
+        alert(data.message);
+      }
+    }
+
+    async function resetPassword(userId, userName) {
+      if (!confirm(`确定要重置 ${userName} 的密码吗？\n密码将被重置为: 123456`)) return;
+
+      const res = await fetch(`/api/admin/users/${userId}/reset-password`, {
+        method: 'PUT',
+        headers: { 'Authorization': token }
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showMessage(data.message);
+      }
+    }
+
+    function showMessage(msg) {
+      const el = document.getElementById('message');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.clear();
+      window.location.href = '/login.html';
+    });
+
+    checkAdmin();
+  </script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>注册 - 公司内部系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="page-container">
+    <div class="card">
+      <!-- Logo 占位 -->
+      <div class="logo-placeholder">LOGO</div>
+
+      <h1>创建账号</h1>
+      <p class="subtitle">加入公司内部管理系统</p>
+
+      <form id="signup-form">
+        <label>姓名</label>
+        <input type="text" id="name" placeholder="请输入您的姓名" required autofocus>
+
+        <label>邮箱 / 工号</label>
+        <input type="text" id="email" placeholder="请输入邮箱或工号" required>
+
+        <label>密码</label>
+        <input type="password" id="password" placeholder="请设置密码（6位以上，需包含字母和数字）" required minlength="6">
+
+        <div id="error" class="error"></div>
+        <button type="submit">注 册</button>
+      </form>
+
+      <p class="switch-link">已有账号？<a href="/login.html">立即登录</a></p>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('signup-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      if (password.length < 6) {
+        errorEl.textContent = '密码不能少于6位';
+        return;
+      }
+      if (!/[a-zA-Z]/.test(password)) {
+        errorEl.textContent = '密码必须包含至少一个字母';
+        return;
+      }
+      if (!/[0-9]/.test(password)) {
+        errorEl.textContent = '密码必须包含至少一个数字';
+        return;
+      }
+
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        errorEl.style.color = '#52c41a';
+        errorEl.textContent = '注册成功！正在跳转到登录页...';
+        setTimeout(() => { window.location.href = '/login.html'; }, 1500);
+      } else {
+        errorEl.style.color = '#ff4d4f';
+        errorEl.textContent = data.message;
+      }
+    });
+  </script>
+</body>
+</html>

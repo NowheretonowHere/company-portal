@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - 公司内部系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="page-container">
+    <div class="card">
+      <!-- Logo 占位 -->
+      <div class="logo-placeholder">LOGO</div>
+
+      <h1>登录系统</h1>
+      <p class="subtitle">欢迎回来，请登录您的账号</p>
+
+      <form id="login-form">
+        <label>邮箱 / 工号</label>
+        <input type="text" id="email" placeholder="请输入邮箱或工号" required autofocus>
+
+        <label>密码</label>
+        <input type="password" id="password" placeholder="请输入密码" required>
+
+        <div id="error" class="error"></div>
+        <button type="submit">登 录</button>
+      </form>
+
+      <p class="switch-link">还没有账号？<a href="/signup.html">立即注册</a></p>
+    </div>
+  </div>
+
+  <script>
+    // 如果已经登录，直接跳转仪表板
+    if (localStorage.getItem('token')) {
+      window.location.href = '/dashboard.html';
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '';
+
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('userName', data.name);
+        localStorage.setItem('userRole', data.role);
+        window.location.href = '/dashboard.html';
+      } else {
+        errorEl.textContent = data.message;
+      }
+    });
+  </script>
+</body>
+</html>
