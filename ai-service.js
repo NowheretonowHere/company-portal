@@ -1,36 +1,70 @@
-const AI_API_KEY = process.env.AI_API_KEY || '';
-const AI_API_BASE_URL = process.env.AI_API_BASE_URL || 'https://api.openai.com/v1';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
 const AI_SYSTEM_PROMPT = process.env.AI_SYSTEM_PROMPT || '你是一个有帮助的AI助手。请用中文回答用户的问题。';
 
-// 图片生成 API 配置（独立于聊天 API）
-const IMAGE_API_KEY = process.env.IMAGE_API_KEY || AI_API_KEY;
-const IMAGE_API_BASE_URL = process.env.IMAGE_API_BASE_URL || AI_API_BASE_URL;
-const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-image-2';
-
-// 检测 API 格式：URL 含 "anthropic" 则用 Anthropic 格式
-const isAnthropic = AI_API_BASE_URL.includes('anthropic');
-
-/**
- * Chat completion — 自动适配 OpenAI / Anthropic 两种 API 格式。
- */
-async function chat(messages, options = {}) {
-  if (!AI_API_KEY) {
-    throw new Error('AI_API_KEY 未配置，请联系管理员设置环境变量');
+// ===== 聊天 API 供应商配置 =====
+const chatProviders = {
+  deepseek: {
+    key: process.env.AI_API_KEY || '',
+    baseUrl: process.env.AI_API_BASE_URL || 'https://api.deepseek.com/anthropic',
+    defaultModel: process.env.AI_MODEL || 'deepseek-chat',
+    format: 'anthropic'
   }
+};
 
-  const model = options.model || AI_MODEL;
-
-  if (isAnthropic) {
-    return chatAnthropic(messages, model, options);
+// ===== 图片生成 API 多供应商配置 =====
+const imageProviders = {
+  atlascloud: {
+    key: process.env.IMAGE_API_KEY || '',
+    baseUrl: process.env.IMAGE_API_BASE_URL || 'https://api.atlascloud.ai/api/v1',
+    defaultModel: process.env.IMAGE_MODEL || 'openai/gpt-image-2/text-to-image',
+    endpoint: '/model/generateImage'
+  },
+  qwen: {
+    key: process.env.QWEN_API_KEY || '',
+    baseUrl: 'https://dashscope.aliyuncs.com',
+    defaultModel: process.env.QWEN_MODEL || 'qwen-image-2.0',
+    endpoint: '/api/v1/services/aigc/multimodal-generation/generation',
+    format: 'dashscope'
   }
-  return chatOpenAI(messages, model, options);
+};
+
+// 根据模型名匹配聊天供应商
+function getChatProvider(model) {
+  const m = (model || '').toLowerCase();
+  if (m.includes('deepseek')) return { ...chatProviders.deepseek, name: 'deepseek' };
+  return { ...chatProviders.deepseek, name: 'deepseek' };
+}
+
+// 根据模型名匹配图片供应商
+function getImageProvider(model) {
+  const m = (model || '').toLowerCase();
+  if (m.includes('qwen')) return { ...imageProviders.qwen, name: 'qwen' };
+  if (m.includes('atlascloud') || m.includes('gpt-image')) return { ...imageProviders.atlascloud, name: 'atlascloud' };
+  return { ...imageProviders.atlascloud, name: 'atlascloud' };
+}
+
+// 判断是否为图片编辑模型
+function isEditModel(model) {
+  return (model || '').toLowerCase().includes('edit');
 }
 
 /**
- * OpenAI 兼容格式 (OpenAI / DeepSeek / vLLM 等)
+ * Chat completion — 多供应商自动路由。
  */
-async function chatOpenAI(messages, model, options) {
+async function chat(messages, options = {}) {
+  const model = options.model || chatProviders.deepseek.defaultModel;
+  const provider = getChatProvider(model);
+
+  if (!provider.key) {
+    throw new Error(`AI_API_KEY 未配置 (${provider.name})，请联系管理员设置环境变量`);
+  }
+
+  if (provider.format === 'anthropic') {
+    return chatAnthropic(provider, messages, model, options);
+  }
+  return chatOpenAI(provider, messages, model, options);
+}
+
+async function chatOpenAI(provider, messages, model, options) {
   const requestBody = {
     model,
     messages: [
@@ -41,18 +75,18 @@ async function chatOpenAI(messages, model, options) {
     max_tokens: options.max_tokens ?? 2000
   };
 
-  const response = await fetch(`${AI_API_BASE_URL}/chat/completions`, {
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${AI_API_KEY}`
+      'Authorization': `Bearer ${provider.key}`
     },
     body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`AI API 错误 (${response.status}): ${errorText}`);
+    throw new Error(`AI API 错误 (${provider.name} ${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
@@ -63,10 +97,7 @@ async function chatOpenAI(messages, model, options) {
   };
 }
 
-/**
- * Anthropic Messages API 格式 (Claude / DeepSeek Anthropic 兼容端点)
- */
-async function chatAnthropic(messages, model, options) {
+async function chatAnthropic(provider, messages, model, options) {
   const requestBody = {
     model,
     system: AI_SYSTEM_PROMPT,
@@ -75,11 +106,11 @@ async function chatAnthropic(messages, model, options) {
     temperature: options.temperature ?? 0.7
   };
 
-  const response = await fetch(`${AI_API_BASE_URL}/messages`, {
+  const response = await fetch(`${provider.baseUrl}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': AI_API_KEY,
+      'x-api-key': provider.key,
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify(requestBody)
@@ -87,7 +118,7 @@ async function chatAnthropic(messages, model, options) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`AI API 错误 (${response.status}): ${errorText}`);
+    throw new Error(`AI API 错误 (${provider.name} ${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
@@ -99,100 +130,177 @@ async function chatAnthropic(messages, model, options) {
 }
 
 /**
- * Generate image (Text-to-Image) — AtlasCloud / OpenAI 兼容格式。
- * 使用独立的 IMAGE_API_KEY 和 IMAGE_API_BASE_URL 配置。
- * 模型: openai/gpt-image-2/text-to-image
+ * Generate image (Text-to-Image) — 多供应商自动路由。
+ * 根据模型名匹配图片生成供应商。
  */
 async function generateImage(prompt, options = {}) {
-  if (!IMAGE_API_KEY) {
-    throw new Error('IMAGE_API_KEY 未配置，请联系管理员设置环境变量');
+  const model = options.model || imageProviders.atlascloud.defaultModel;
+  const provider = getImageProvider(model);
+
+  if (!provider.key) {
+    throw new Error(`图片 API Key 未配置 (${provider.name})，请联系管理员设置环境变量`);
   }
 
-  const requestBody = {
-    model: options.model || IMAGE_MODEL,
-    prompt: prompt,
-    size: options.size || '1024x1024',
-    n: options.n || 1,
-    quality: options.quality || 'medium',
-    output_format: options.output_format || 'jpeg',
-    enable_sync_mode: options.enable_sync_mode ?? true,
-    enable_base64_output: options.enable_base64_output ?? false
-  };
-
-  const response = await fetch(`${IMAGE_API_BASE_URL}/model/generateImage`, {
-    method: 'POST',
-    headers: {
+  let requestBody, headers;
+  if (provider.format === 'dashscope') {
+    // 阿里云百炼原生格式 (multimodal-generation)
+    requestBody = {
+      model,
+      input: {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { text: prompt }
+            ]
+          }
+        ]
+      },
+      parameters: {
+        size: (options.size || '1024*1024').replace('x', '*'),
+        n: options.n || 1
+      }
+    };
+    headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${IMAGE_API_KEY}`
-    },
+      'Authorization': `Bearer ${provider.key}`,
+      'X-DashScope-Async': 'disable'
+    };
+  } else {
+    // OpenAI 兼容格式 (AtlasCloud 等)
+    requestBody = {
+      model,
+      prompt: prompt,
+      n: options.n || 1,
+      size: options.size || '1024x1024'
+    };
+    headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.key}`
+    };
+  }
+
+  const response = await fetch(`${provider.baseUrl}${provider.endpoint}`, {
+    method: 'POST',
+    headers,
     body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`图片生成 API 错误 (${response.status}): ${errorText}`);
+    throw new Error(`图片生成 API 错误 (${provider.name} ${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
+
+  // 解析不同格式的响应
+  if (provider.format === 'dashscope') {
+    // 从 multimodal-generation 响应中提取图片URL
+    const choices = data.output?.choices || [];
+    const images = [];
+    for (const choice of choices) {
+      const content = choice.message?.content || [];
+      for (const part of content) {
+        if (part.image) {
+          images.push({ url: part.image });
+        }
+      }
+    }
+    return { model, images };
+  }
+
   return {
-    model: data.model,
+    model: data.model || model,
     images: (data.data || []).map(img => ({
       url: img.url,
-      b64Json: img.b64_json,
-      revisedPrompt: img.revised_prompt
+      b64Json: img.b64_json
     }))
   };
 }
 
 /**
- * Edit image — AtlasCloud GPT Image 2 Edit。
- * 模型: openai/gpt-image-2/edit
- * @param {Array<string>} images - 图片 URL 或 base64 数组
- * @param {string} prompt - 编辑指令
- * @param {Object} options
+ * Edit image — 多供应商自动路由。
+ * 支持 AtlasCloud (OpenAI 兼容) 和 百炼 (DashScope 原生)。
  */
 async function editImage(images, prompt, options = {}) {
-  if (!IMAGE_API_KEY) {
-    throw new Error('IMAGE_API_KEY 未配置，请联系管理员设置环境变量');
-  }
   if (!images || images.length === 0) {
     throw new Error('至少需要一张图片');
   }
 
-  const requestBody = {
-    model: options.model || 'openai/gpt-image-2/edit',
-    images: images,
-    prompt: prompt,
-    size: options.size || '1024x1024',
-    quality: options.quality || 'medium',
-    output_format: options.output_format || 'jpeg',
-    enable_sync_mode: options.enable_sync_mode ?? true,
-    enable_base64_output: options.enable_base64_output ?? false
-  };
+  const model = options.model || 'qwen-image-edit-plus';
+  const provider = getImageProvider(model);
 
-  const response = await fetch(`${IMAGE_API_BASE_URL}/model/editImage`, {
-    method: 'POST',
-    headers: {
+  if (!provider.key) {
+    throw new Error(`图片 API Key 未配置 (${provider.name})，请联系管理员设置环境变量`);
+  }
+
+  let requestBody, headers, url;
+
+  if (provider.format === 'dashscope') {
+    // 百炼原生格式：image + text 放在一个 content 数组中
+    const contentParts = images.map(img => ({ image: img }));
+    contentParts.push({ text: prompt });
+    requestBody = {
+      model,
+      input: {
+        messages: [{ role: 'user', content: contentParts }]
+      },
+      parameters: { size: (options.size || '1024*1024').replace('x', '*') }
+    };
+    headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${IMAGE_API_KEY}`
-    },
+      'Authorization': `Bearer ${provider.key}`,
+      'X-DashScope-Async': 'disable'
+    };
+    url = `${provider.baseUrl}${provider.endpoint}`;
+  } else {
+    // AtlasCloud / OpenAI 兼容格式
+    requestBody = {
+      model,
+      images: images,
+      prompt: prompt,
+      size: options.size || '1024x1024'
+    };
+    headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.key}`
+    };
+    url = `${provider.baseUrl}/model/editImage`;
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
     body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`图片编辑 API 错误 (${response.status}): ${errorText}`);
+    throw new Error(`图片编辑 API 错误 (${provider.name} ${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
+
+  // 解析不同格式的响应
+  if (provider.format === 'dashscope') {
+    const choices = data.output?.choices || [];
+    const resultImages = [];
+    for (const choice of choices) {
+      const content = choice.message?.content || [];
+      for (const part of content) {
+        if (part.image) resultImages.push({ url: part.image });
+      }
+    }
+    return { model, images: resultImages };
+  }
+
   return {
     model: data.model,
     images: (data.data || []).map(img => ({
       url: img.url,
-      b64Json: img.b64_json,
-      revisedPrompt: img.revised_prompt
+      b64Json: img.b64_json
     }))
   };
 }
 
-module.exports = { chat, generateImage, editImage };
+module.exports = { chat, generateImage, editImage, isEditModel };

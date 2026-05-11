@@ -55,13 +55,13 @@
         <span class="chat-loading-dot"></span>
       </div>
 
+      <div id="file-preview" class="file-preview" style="display:none"></div>
       <div class="chat-input-area">
         <input type="file" id="file-input" style="display:none" accept="image/*,.pdf,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json,.md">
         <button id="attach-btn" class="chat-attach-btn" title="上传文件">+</button>
-        <textarea id="chat-input" class="chat-input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <textarea id="chat-input" class="chat-input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl+V 粘贴图片" disabled></textarea>
         <button id="send-btn" class="chat-send-btn" disabled>发送</button>
       </div>
-      <div id="file-preview" class="file-preview" style="display:none"></div>
     </section>
   </div>
 
@@ -114,11 +114,49 @@
 
     fileInputEl.addEventListener('change', () => {
       for (const file of fileInputEl.files) {
-        if (pendingFiles.length >= 5) { alert('最多上传5个文件'); break; }
+        if (pendingFiles.length >= 10) { alert('最多上传10个文件'); break; }
         pendingFiles.push(file);
       }
       fileInputEl.value = '';
       renderFilePreview();
+    });
+
+    // 拖拽上传
+    const chatMain = document.querySelector('.chat-main');
+    chatMain.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    chatMain.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isLoading) return;
+      const files = e.dataTransfer?.files;
+      if (!files) return;
+      for (const file of files) {
+        if (pendingFiles.length >= 10) { alert('最多上传10个文件'); break; }
+        pendingFiles.push(file);
+      }
+      renderFilePreview();
+    });
+
+    // 粘贴图片支持
+    document.addEventListener('paste', (e) => {
+      if (isLoading) return;
+      // 只在聊天区域响应粘贴
+      if (!e.target.closest('.chat-main') && !e.target.closest('.chat-input-area')) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file && pendingFiles.length < 10) {
+            pendingFiles.push(file);
+            renderFilePreview();
+          }
+        }
+      }
     });
 
     function renderFilePreview() {
@@ -128,12 +166,35 @@
         return;
       }
       filePreviewEl.style.display = 'flex';
-      filePreviewEl.innerHTML = pendingFiles.map((f, i) => `
-        <span class="file-tag">
-          ${escapeHtml(f.name)} (${formatFileSize(f.size)})
-          <button class="file-tag-remove" onclick="pendingFiles.splice(${i},1);renderFilePreview();">&times;</button>
-        </span>
-      `).join('');
+      filePreviewEl.innerHTML = pendingFiles.map((f, i) => {
+        const isImage = f.type.startsWith('image/');
+        let preview;
+        if (isImage) {
+          const objectUrl = URL.createObjectURL(f);
+          // 清理旧 URL 防内存泄漏
+          const oldUrl = f._objectUrl;
+          if (oldUrl) URL.revokeObjectURL(oldUrl);
+          f._objectUrl = objectUrl;
+          preview = `<img src="${objectUrl}" class="file-thumb-img">`;
+        } else {
+          const ext = (f.name || '').split('.').pop().toUpperCase();
+          preview = `<span class="file-thumb-icon">${ext || 'FILE'}</span>`;
+        }
+        return `
+          <span class="file-thumb">
+            ${preview}
+            <button class="file-thumb-remove" title="移除"
+              onclick="event.preventDefault();event.stopPropagation();removeFile(${i});">&times;</button>
+            <span class="file-thumb-name">${escapeHtml(f.name)}</span>
+          </span>`;
+      }).join('');
+    }
+
+    function removeFile(index) {
+      const f = pendingFiles[index];
+      if (f._objectUrl) URL.revokeObjectURL(f._objectUrl);
+      pendingFiles.splice(index, 1);
+      renderFilePreview();
     }
 
     function formatFileSize(bytes) {
@@ -243,10 +304,36 @@
       }
     }
 
+    function renderContent(content) {
+      // 先转义 HTML 防 XSS
+      let html = escapeHtml(content);
+
+      // Markdown 图片: ![alt](url)
+      html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+        return `<img src="${url}" alt="${alt}" class="chat-msg-img" onclick="viewImage('${url}')" loading="lazy">`;
+      });
+
+      // 引用块: > text（支持多行）
+      html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="chat-blockquote">$1</blockquote>');
+
+      // 普通换行
+      html = html.replace(/\n/g, '<br>');
+
+      return html;
+    }
+
+    function viewImage(url) {
+      const overlay = document.createElement('div');
+      overlay.className = 'img-lightbox';
+      overlay.innerHTML = `<img src="${url}" onclick="this.parentElement.remove()">`;
+      overlay.addEventListener('click', () => overlay.remove());
+      document.body.appendChild(overlay);
+    }
+
     function renderMessages(messages) {
       chatMessagesEl.innerHTML = messages.map(m => `
         <div class="chat-message ${m.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
-          <div class="chat-message-bubble">${escapeHtml(m.content)}</div>
+          <div class="chat-message-bubble">${renderContent(m.content)}</div>
           <div class="chat-message-time">${formatTime(m.createdAt)}</div>
         </div>
       `).join('');
@@ -258,6 +345,20 @@
       const hasFiles = pendingFiles.length > 0;
       if (!message && !hasFiles) return;
       if (isLoading) return;
+
+      // 立即清空输入框
+      chatInputEl.value = '';
+      chatInputEl.style.height = 'auto';
+
+      // 乐观渲染：立即显示用户消息
+      chatEmptyEl.style.display = 'none';
+      const tempUserMsg = {
+        role: 'user',
+        content: message + (hasFiles ? ` [已选择${pendingFiles.length}个文件]` : ''),
+        createdAt: new Date().toISOString().replace('T', ' ').substring(0, 19)
+      };
+      chatMessagesEl.insertAdjacentHTML('beforeend', renderMessageHTML(tempUserMsg));
+      scrollToBottom();
 
       isLoading = true;
       chatInputEl.disabled = true;
@@ -297,39 +398,38 @@
         const data = await res.json();
 
         if (!data.success) {
-          alert(data.message);
+          // 移除乐观渲染的临时消息，显示错误
+          chatMessagesEl.lastElementChild?.remove();
+          chatMessagesEl.insertAdjacentHTML('beforeend',
+            `<div class="chat-message chat-message-assistant"><div class="chat-message-bubble" style="color:var(--error);">❌ ${escapeHtml(data.message)}</div></div>`);
+          scrollToBottom();
           return;
         }
 
-        chatEmptyEl.style.display = 'none';
+        // 移除临时消息，渲染正式消息
+        chatMessagesEl.lastElementChild?.remove();
 
         if (isNewConversation) {
-          // 新对话：刷新列表并选中
           currentConversationId = data.conversationId;
           await loadConversations();
-          // 显示完整消息
-          const userMsg = data.userMessage;
-          const aiMsg = data.assistantMessage;
           chatMessagesEl.innerHTML =
-            renderMessageHTML(userMsg) + renderMessageHTML(aiMsg);
+            renderMessageHTML(data.userMessage) + renderMessageHTML(data.assistantMessage);
           chatTitleEl.textContent = message.substring(0, 30);
           history.replaceState(null, '', `?id=${data.conversationId}`);
         } else {
-          // 已有对话：追加消息
           chatMessagesEl.insertAdjacentHTML('beforeend',
             renderMessageHTML(data.userMessage) + renderMessageHTML(data.assistantMessage));
-          // 更新对话列表排序
           await loadConversations();
-          // 重新高亮当前对话
           renderConversationList();
         }
 
-        chatInputEl.value = '';
-        chatInputEl.style.height = 'auto';
         scrollToBottom();
       } catch (err) {
-        alert('发送失败，请检查网络后重试');
-        console.error(err);
+        chatMessagesEl.lastElementChild?.remove();
+        chatMessagesEl.insertAdjacentHTML('beforeend',
+          `<div class="chat-message chat-message-assistant"><div class="chat-message-bubble" style="color:var(--error);">❌ 网络错误，请检查连接后重试</div></div>`);
+        scrollToBottom();
+        console.error('发送失败', err);
       } finally {
         isLoading = false;
         chatInputEl.disabled = false;
@@ -345,7 +445,7 @@
     function renderMessageHTML(msg) {
       return `
         <div class="chat-message ${msg.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
-          <div class="chat-message-bubble">${escapeHtml(msg.content)}</div>
+          <div class="chat-message-bubble">${renderContent(msg.content)}</div>
           <div class="chat-message-time">${formatTime(msg.createdAt)}</div>
         </div>`;
     }

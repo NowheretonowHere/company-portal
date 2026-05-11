@@ -11,7 +11,10 @@ const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'company-internal-secret-2024';
 const AI_API_KEY = process.env.AI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
-const AI_MODELS = (process.env.AI_MODELS || 'deepseek-chat,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
+const AI_MODELS = (process.env.AI_MODELS || 'deepseek-chat,qwen-image-2.0,qwen-image-edit-plus,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
+const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-image-2.0';
+const IMAGE_MODELS = (process.env.IMAGE_MODELS || 'qwen-image-2.0,qwen-image-edit-plus,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -462,15 +465,48 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
 
     // 调用AI - 检测图片模型
     const convModel = model || AI_MODEL;
-    const isImageModel = convModel.includes('image') || convModel.includes('gpt-image');
+    const isImageModel = IMAGE_MODELS.includes(convModel);
+    const isEditModel = aiService.isEditModel(convModel);
 
     let aiContent;
     if (isImageModel) {
-      const imgResult = await aiService.generateImage(message.trim(), { model: convModel });
-      // 将图片URL转为可显示的markdown格式
-      aiContent = imgResult.images.map((img, i) =>
-        `![生成图片 ${i + 1}](${img.url || (img.b64Json ? 'data:image/png;base64,' + img.b64Json : '')})\n\n> 提示词: ${message.trim()}`
-      ).join('\n\n');
+      if (isEditModel) {
+        // 提取用户消息中上传的图片路径
+        const imgPaths = [];
+        const imgRegex = /\[图片:.*?\]\(\/(uploads\/[^)]+)\)/g;
+        let m;
+        while ((m = imgRegex.exec(message)) !== null) {
+          imgPaths.push(m[1]);
+        }
+        if (imgPaths.length === 0) {
+          return res.json({ success: false, message: '图片编辑需要上传图片，请先点击 + 按钮上传图片' });
+        }
+
+        // 将本地图片转为 base64 data URI
+        const imgBase64 = [];
+        for (const imgPath of imgPaths) {
+          const fullPath = path.join(__dirname, imgPath);
+          if (!fs.existsSync(fullPath)) {
+            return res.json({ success: false, message: `图片文件不存在: ${imgPath}` });
+          }
+          const buffer = fs.readFileSync(fullPath);
+          const ext = path.extname(imgPath).toLowerCase();
+          const mimeType = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }[ext] || 'image/png';
+          imgBase64.push(`data:${mimeType};base64,${buffer.toString('base64')}`);
+        }
+
+        // 提取纯文本提示词（去掉文件引用部分）
+        const editPrompt = message.replace(/\[图片:.*?\]\(\/uploads\/[^)]+\)/g, '').trim() || 'enhance this image';
+        const editResult = await aiService.editImage(imgBase64, editPrompt, { model: convModel });
+        aiContent = editResult.images.map((img, i) =>
+          `![编辑图片 ${i + 1}](${img.url || (img.b64Json ? 'data:image/png;base64,' + img.b64Json : '')})\n\n> 编辑指令: ${editPrompt}`
+        ).join('\n\n');
+      } else {
+        const imgResult = await aiService.generateImage(message.trim(), { model: convModel });
+        aiContent = imgResult.images.map((img, i) =>
+          `![生成图片 ${i + 1}](${img.url || (img.b64Json ? 'data:image/png;base64,' + img.b64Json : '')})\n\n> 提示词: ${message.trim()}`
+        ).join('\n\n');
+      }
     } else {
       const aiResponse = await aiService.chat(history, { model: convModel });
       aiContent = aiResponse.content;
@@ -494,7 +530,7 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
       success: true,
       conversationId: convId,
       userMessage: { id: userMsgId, role: 'user', content: message.trim(), createdAt: now },
-      assistantMessage: { id: assistantMsgId, role: 'assistant', content: aiResponse.content, createdAt: aiNow }
+      assistantMessage: { id: assistantMsgId, role: 'assistant', content: aiContent, createdAt: aiNow }
     });
   } catch (err) {
     console.error('AI Chat Error:', err.message);
