@@ -26,36 +26,88 @@
   <main class="dashboard-main">
     <div class="welcome-card">
       <h2>欢迎回来，<span id="welcome-name">...</span></h2>
-      <p>这是您的仪表板首页，后续功能模块将在这里添加。</p>
+      <p>这是您的仪表板首页，查看使用情况和快捷入口。</p>
     </div>
 
+    <!-- 统计卡片行 -->
+    <div class="stats-row" id="stats-row">
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-calls">&#x1f4ac;</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-remaining">-</div>
+          <div class="stat-label">今日剩余调用</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-model">&#x1f916;</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-model">未使用</div>
+          <div class="stat-label">最近使用模型</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-date">&#x1f4c5;</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-created">-</div>
+          <div class="stat-label">注册时间</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 今日概况 -->
+    <div class="stats-row" style="margin-top:20px;" id="stats-row-extra">
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-calls">💬</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-conversations">-</div>
+          <div class="stat-label">今日对话数</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-model">👥</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-active-users">-</div>
+          <div class="stat-label">今日活跃用户</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-date">📊</div>
+        <div class="stat-body">
+          <div class="stat-value" id="stat-model-usage" style="font-size:13px;line-height:1.6;">-</div>
+          <div class="stat-label">各模型调用次数</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 信息 + 公告 -->
     <div class="info-cards">
       <div class="info-card">
         <h3>用户信息</h3>
-        <div class="info-item"><span class="label">姓名：</span><span id="info-name">-</span></div>
-        <div class="info-item"><span class="label">邮箱：</span><span id="info-email">-</span></div>
+        <div class="info-item"><span class="label">用户名：</span><span id="info-name">-</span></div>
+        <div class="info-item"><span class="label">工号：</span><span id="info-email">-</span></div>
         <div class="info-item"><span class="label">角色：</span><span id="info-role">-</span></div>
         <div class="info-item"><span class="label">最后登录：</span><span id="info-lastlogin">-</span></div>
         <button id="change-pwd-btn" class="btn-primary" style="margin-top:16px;width:100%;">修改密码</button>
       </div>
-      <div class="info-card">
-        <h3>系统通知</h3>
-        <p id="notice-text">登录成功，欢迎使用公司内部管理系统。</p>
+      <div class="info-card announcement-card">
+        <h3>&#x1f4e2; 公告栏</h3>
+        <p id="announcement-text" class="announcement-text">加载中...</p>
       </div>
     </div>
 
+    <!-- 快捷操作 -->
     <div class="info-cards" style="margin-top:20px;">
-      <div class="info-card quick-action" onclick="window.location.href='/admin.html'" id="admin-entry" style="display:none;cursor:pointer;">
+      <div class="info-card quick-action" onclick="window.location.href='/admin.html'" id="admin-entry" style="display:none;">
         <h3>用户管理</h3>
         <p>管理所有用户账号，启用/禁用用户，重置密码</p>
         <span class="card-arrow">&rarr;</span>
       </div>
-      <div class="info-card quick-action" onclick="window.location.href='/chat.html'" style="cursor:pointer;">
+      <div class="info-card quick-action" onclick="window.location.href='/chat.html'">
         <h3>AI 助手</h3>
-        <p>与AI智能助手对话，获取帮助和建议</p>
+        <p>与 AI 智能助手对话，获取帮助和建议</p>
         <span class="card-arrow">&rarr;</span>
       </div>
-      <div class="info-card quick-action" id="change-pwd-card" style="cursor:pointer;">
+      <div class="info-card quick-action" id="change-pwd-card">
         <h3>账号安全</h3>
         <p>定期修改密码，保护账号安全</p>
         <span class="card-arrow">&rarr;</span>
@@ -94,45 +146,96 @@
       window.location.href = '/login.html';
     }
 
-    async function loadUser() {
+    async function loadDashboard() {
       try {
-        const res = await fetch('/api/me', {
-          headers: { 'Authorization': token }
-        });
+        // 并行请求
+        const [meRes, usageRes, statsRes] = await Promise.all([
+          fetch('/api/me', { headers: { 'Authorization': token } }),
+          fetch('/api/usage/remaining', { headers: { 'Authorization': token } }),
+          fetch('/api/stats', { headers: { 'Authorization': token } }).catch(() => null)
+        ]);
 
-        if (!res.ok) {
+        // 处理 /api/me
+        if (!meRes.ok) {
           localStorage.clear();
           window.location.href = '/login.html';
           return;
         }
+        const meData = await meRes.json();
+        const user = meData.user;
 
-        const data = await res.json();
-        const user = data.user;
+        // 顶部导航
+        document.getElementById('user-name').textContent = user.username;
+        document.getElementById('welcome-name').textContent = user.username;
 
-        document.getElementById('user-name').textContent = user.name;
-        document.getElementById('welcome-name').textContent = user.name;
-        document.getElementById('info-name').textContent = user.name;
-        document.getElementById('info-email').textContent = user.email;
+        if (user.role === 'admin') {
+          document.getElementById('topbar-nav').innerHTML =
+            '<a href="/chat.html" class="nav-link">AI 助手</a>' +
+            '<a href="/admin.html" class="nav-link">用户管理</a>';
+          document.getElementById('admin-entry').style.display = 'block';
+        }
+
+        // 用户信息卡片
+        document.getElementById('info-name').textContent = user.username;
+        document.getElementById('info-email').textContent = user.employeeId || '-';
         document.getElementById('info-role').textContent = user.role === 'admin' ? '管理员' : '普通用户';
         document.getElementById('info-lastlogin').textContent = user.lastLogin || '首次登录';
 
-        if (user.role === 'admin') {
-          document.getElementById('topbar-nav').innerHTML = '<a href="/chat.html" class="nav-link">AI 助手</a><a href="/admin.html" class="nav-link">用户管理</a>';
-          document.getElementById('admin-entry').style.display = 'block';
+        // 公告
+        document.getElementById('announcement-text').textContent = meData.announcement;
+
+        // 最近使用模型
+        const lastModel = meData.lastModel;
+        document.getElementById('stat-model').textContent = lastModel || '暂无记录';
+
+        // 注册时间
+        if (user.createdAt) {
+          const d = new Date(user.createdAt.replace(' ', 'T') + '+08:00');
+          document.getElementById('stat-created').textContent =
+            d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        } else {
+          document.getElementById('stat-created').textContent = '-';
+        }
+
+        // 剩余调用次数
+        if (usageRes.ok) {
+          const usageData = await usageRes.json();
+          if (usageData.success) {
+            const el = document.getElementById('stat-remaining');
+            const r = usageData.remaining;
+            const limit = usageData.limit;
+            el.textContent = `${r} / ${limit}`;
+            if (r <= 5) el.style.color = 'var(--error)';
+            else if (r <= 15) el.style.color = 'var(--accent)';
+          }
+        }
+
+        // 统计数据
+        if (statsRes && statsRes.ok) {
+          const statsData = await statsRes.json();
+          if (statsData.success) {
+            document.getElementById('stat-conversations').textContent = statsData.todayConversations;
+            document.getElementById('stat-active-users').textContent = statsData.todayActiveUsers;
+            const modelEntries = Object.entries(statsData.modelUsage);
+            document.getElementById('stat-model-usage').innerHTML =
+              modelEntries.length > 0
+                ? modelEntries.map(([k, v]) => `<span>${k}: <b>${v}</b></span>`).join('<br>')
+                : '暂无数据';
+          }
         }
       } catch (err) {
-        console.error('获取用户信息失败', err);
+        console.error('加载仪表板失败', err);
       }
     }
 
-    loadUser();
+    loadDashboard();
 
     document.getElementById('logout-btn').addEventListener('click', () => {
       localStorage.clear();
       window.location.href = '/login.html';
     });
 
-    // 修改密码弹窗
+    // ---------- 修改密码 ----------
     const modal = document.getElementById('pwd-modal');
     const openModal = () => {
       modal.classList.add('show');

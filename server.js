@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const bcrypt = require('bcryptjs');
@@ -15,6 +16,16 @@ const AI_MODELS = (process.env.AI_MODELS || 'deepseek-chat,qwen-image-2.0,qwen-i
 const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-image-2.0';
 const IMAGE_MODELS = (process.env.IMAGE_MODELS || 'qwen-image-2.0,qwen-image-edit-plus,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
+
+function escapeHtml(text) {
+  if (text == null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -78,6 +89,40 @@ function createTables() {
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
     )
   `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      usage_date TEXT NOT NULL,
+      call_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, usage_date)
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS admin_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_user_id INTEGER NOT NULL,
+      admin_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id INTEGER,
+      details TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS model_usage_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      user_name TEXT NOT NULL,
+      model TEXT NOT NULL,
+      usage_date TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
   saveDatabase();
   console.log('数据库已初始化');
 }
@@ -108,6 +153,32 @@ function migrateDatabase() {
   try {
     db.run('ALTER TABLE users ADD COLUMN locked_until TEXT');
   } catch (e) { /* 字段已存在 */ }
+  try {
+    db.run('ALTER TABLE users ADD COLUMN employee_id TEXT');
+  } catch (e) { /* 字段已存在 */ }
+  try {
+    db.run('ALTER TABLE users ADD COLUMN username TEXT');
+  } catch (e) { /* 字段已存在 */ }
+  // 为已有用户自动补录
+  try {
+    const missingEid = db.exec("SELECT id FROM users WHERE employee_id IS NULL OR employee_id = ''");
+    if (missingEid.length > 0 && missingEid[0].values.length > 0) {
+      missingEid[0].values.forEach(row => {
+        db.run('UPDATE users SET employee_id = ? WHERE id = ?', ['LT' + String(row[0]).padStart(4, '0'), row[0]]);
+      });
+    }
+  } catch (e) { /* 忽略 */ }
+  try {
+    const missingUser = db.exec("SELECT id, name FROM users WHERE username IS NULL OR username = ''");
+    if (missingUser.length > 0 && missingUser[0].values.length > 0) {
+      missingUser[0].values.forEach(row => {
+        db.run('UPDATE users SET username = ? WHERE id = ?', [row[1] || ('user' + row[0]), row[0]]);
+      });
+    }
+  } catch (e) { /* 忽略 */ }
+  // 确保 username 唯一索引
+  try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)'); } catch (e) {}
+  try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee_id ON users(employee_id)'); } catch (e) {}
   // 聊天表迁移
   try {
     db.run("CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '新对话', model TEXT NOT NULL DEFAULT 'gpt-4o-mini', created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
@@ -115,21 +186,71 @@ function migrateDatabase() {
   try {
     db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE)");
   } catch (e) { /* 表已存在 */ }
+  try {
+    db.run("CREATE TABLE IF NOT EXISTS user_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, usage_date TEXT NOT NULL, call_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, UNIQUE(user_id, usage_date))");
+  } catch (e) { /* 表已存在 */ }
+  try {
+    db.run("CREATE TABLE IF NOT EXISTS admin_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_user_id INTEGER NOT NULL, admin_name TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT, target_id INTEGER, details TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')))");
+  } catch (e) { /* 表已存在 */ }
+  try {
+    db.run("CREATE TABLE IF NOT EXISTS model_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, user_name TEXT NOT NULL, model TEXT NOT NULL, usage_date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
+  } catch (e) { /* 表已存在 */ }
+  // 修复已存在的乱码标题（从第一条用户消息重新生成）
+  try {
+    const garbled = db.exec("SELECT c.id, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS first_msg FROM conversations c WHERE instr(c.title, char(0xFFFD)) > 0");
+    if (garbled.length > 0 && garbled[0].values.length > 0) {
+      let fixed = 0;
+      garbled[0].values.forEach(row => {
+        const convId = row[0];
+        const firstMsg = row[1];
+        if (firstMsg && !firstMsg.includes('�')) {
+          // 第一条消息是干净的，可安全生成标题
+          const newTitle = Array.from(String(firstMsg).trim()).slice(0, 30).join('');
+          db.run('UPDATE conversations SET title = ? WHERE id = ?', [newTitle, convId]);
+        } else {
+          // 连第一条消息都坏了，使用兜底标题
+          db.run('UPDATE conversations SET title = ? WHERE id = ?', ['对话 #' + convId, convId]);
+        }
+        fixed++;
+      });
+      if (fixed > 0) console.log(`已修复 ${fixed} 条乱码对话标题`);
+    }
+  } catch (e) { /* 迁移失败不影响启动 */ }
   saveDatabase();
 }
 
 function seedAdmin() {
-  const exist = db.exec("SELECT id FROM users WHERE role = 'admin'");
-  if (exist.length === 0 || exist[0].values.length === 0) {
+  const admins = db.exec("SELECT id, username, employee_id FROM users WHERE role = 'admin' ORDER BY id");
+  const adminRows = (admins.length > 0 && admins[0].values.length > 0) ? admins[0].values : [];
+
+  if (adminRows.length === 0) {
     const hash = bcrypt.hashSync('adminLT', 10);
-    db.run("INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, 'admin')",
-      ['admin@LT.com', hash, '系统管理员']);
+    db.run("INSERT INTO users (email, password, name, username, employee_id, role) VALUES (?, ?, ?, ?, ?, 'admin')",
+      ['admin@company.local', hash, '管理员', 'admin', 'LT0000']);
     saveDatabase();
-    console.log('已创建默认管理员账号');
-    console.log('  邮箱: admin@LT.com');
-    console.log('  密码: adminLT');
-    console.log('  请首次登录后尽快修改密码！');
+    console.log('已创建默认管理员账号 (LT0000 / admin / adminLT)');
+    return;
   }
+
+  // 清理重复管理员：保留最小 ID，删除其余
+  if (adminRows.length > 1) {
+    for (let i = 1; i < adminRows.length; i++) {
+      const delId = adminRows[i][0];
+      db.run('UPDATE conversations SET user_id = ? WHERE user_id = ?', [adminRows[0][0], delId]);
+      db.run('DELETE FROM user_usage WHERE user_id = ?', [delId]);
+      db.run('DELETE FROM model_usage_logs WHERE user_id = ?', [delId]);
+      db.run('DELETE FROM admin_logs WHERE admin_user_id = ?', [delId]);
+      db.run('DELETE FROM users WHERE id = ?', [delId]);
+    }
+    saveDatabase();
+  }
+
+  // 确保主管理员凭据正确
+  const mainId = adminRows[0][0];
+  const hash = bcrypt.hashSync('adminLT', 10);
+  db.run("UPDATE users SET username = 'admin', employee_id = 'LT0000', password = ?, name = '管理员', role = 'admin', status = 'active' WHERE id = ?", [hash, mainId]);
+  saveDatabase();
+  console.log('管理员账号已确保: LT0000 / admin / adminLT');
 }
 
 // ---------- JWT 中间件 ----------
@@ -152,6 +273,14 @@ function adminMiddleware(req, res, next) {
   next();
 }
 
+function logAdmin(adminUser, action, targetType, targetId, details) {
+  try {
+    db.run('INSERT INTO admin_logs (admin_user_id, admin_name, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?)',
+      [adminUser.id, adminUser.username, action, targetType, targetId || null, details || null]);
+    saveDatabase();
+  } catch (e) { /* 日志失败不影响主流程 */ }
+}
+
 // ---------- 密码强度校验 ----------
 function validatePasswordStrength(password) {
   if (password.length < 6) return '密码不能少于6位';
@@ -162,10 +291,28 @@ function validatePasswordStrength(password) {
 
 // ---------- 注册 ----------
 app.post('/api/register', (req, res) => {
-  const { email, password, name } = req.body;
+  const { username, password, employeeId } = req.body;
 
-  if (!email || !password || !name) {
-    return res.json({ success: false, message: '邮箱、密码和姓名不能为空' });
+  if (!username || !password || !employeeId) {
+    return res.json({ success: false, message: '用户名、工号、密码不能为空' });
+  }
+
+  // 工号格式校验
+  if (!/^LT\d{4}$/.test(employeeId)) {
+    return res.json({ success: false, message: '工号格式错误，必须为 LT + 四位数字（如 LT1234）' });
+  }
+
+  // 禁止注册 admin 用户名和 LT0000 工号
+  if (username === 'admin' || employeeId === 'LT0000') {
+    return res.json({ success: false, message: '该用户名或工号为系统保留，不可注册' });
+  }
+
+  // 用户名规则
+  if (username.length < 2 || username.length > 20) {
+    return res.json({ success: false, message: '用户名长度需在 2-20 个字符之间' });
+  }
+  if (!/^[\w一-鿿]+$/.test(username)) {
+    return res.json({ success: false, message: '用户名只能包含中文、字母、数字和下划线' });
   }
 
   const passwordError = validatePasswordStrength(password);
@@ -173,13 +320,14 @@ app.post('/api/register', (req, res) => {
     return res.json({ success: false, message: passwordError });
   }
 
-  const exist = db.exec('SELECT id FROM users WHERE email = ?', [email]);
+  const exist = db.exec('SELECT id FROM users WHERE username = ? OR employee_id = ?', [username, employeeId]);
   if (exist.length > 0 && exist[0].values.length > 0) {
-    return res.json({ success: false, message: '该邮箱已被注册' });
+    return res.json({ success: false, message: '该用户名或工号已被注册，请直接登录' });
   }
 
   const passwordHash = bcrypt.hashSync(password, 10);
-  db.run('INSERT INTO users (email, password, name) VALUES (?, ?, ?)', [email, passwordHash, name]);
+  db.run('INSERT INTO users (username, password, employee_id, name, email) VALUES (?, ?, ?, ?, ?)',
+    [username, passwordHash, employeeId, username, employeeId + '@company.local']);
   saveDatabase();
 
   res.json({ success: true, message: '注册成功，请登录' });
@@ -190,19 +338,20 @@ const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_DURATION_MINUTES = 15;
 
 app.post('/api/login', (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, remember } = req.body;
+  const account = email || ''; // 前端字段名 email 实际传工号或用户名
 
-  if (!email || !password) {
-    return res.json({ success: false, message: '邮箱和密码不能为空' });
+  if (!account || !password) {
+    return res.json({ success: false, message: '工号/用户名和密码不能为空' });
   }
 
-  const result = db.exec('SELECT id, email, password, name, role, status, login_attempts, locked_until FROM users WHERE email = ?', [email]);
+  const result = db.exec('SELECT id, username, employee_id, password, name, role, status, login_attempts, locked_until FROM users WHERE username = ? OR employee_id = ?', [account, account]);
   if (result.length === 0 || result[0].values.length === 0) {
-    return res.json({ success: false, message: '邮箱或密码错误' });
+    return res.json({ success: false, message: '工号/用户名或密码错误' });
   }
 
   const user = result[0].values[0];
-  const [userId, userEmail, passwordHash, userName, role, status, attempts, lockedUntil] = user;
+  const [userId, userName, employeeId, passwordHash, displayName, role, status, attempts, lockedUntil] = user;
 
   if (status === 'disabled') {
     return res.json({ success: false, message: '该账号已被禁用，请联系管理员' });
@@ -232,7 +381,7 @@ app.post('/api/login', (req, res) => {
     }
     db.run('UPDATE users SET login_attempts = ? WHERE id = ?', [newAttempts, userId]);
     saveDatabase();
-    return res.json({ success: false, message: `邮箱或密码错误，还剩${MAX_LOGIN_ATTEMPTS - newAttempts}次尝试机会` });
+    return res.json({ success: false, message: `工号/用户名或密码错误，还剩${MAX_LOGIN_ATTEMPTS - newAttempts}次尝试机会` });
   }
 
   // 登录成功，清除失败记录
@@ -240,32 +389,47 @@ app.post('/api/login', (req, res) => {
   saveDatabase();
 
   const token = jwt.sign(
-    { id: userId, email: userEmail, name: userName, role },
+    { id: userId, username: userName, employeeId: employeeId, role },
     JWT_SECRET,
-    { expiresIn: '24h' }
+    { expiresIn: remember ? '7d' : '8h' }
   );
 
-  res.json({ success: true, message: '登录成功', token, name: userName, role });
+  res.json({ success: true, message: '登录成功', token, username: userName, employeeId, role });
 });
 
 // ---------- 获取当前用户 ----------
 app.get('/api/me', authMiddleware, (req, res) => {
-  const result = db.exec('SELECT id, email, name, role, status, last_login, created_at FROM users WHERE id = ?', [req.user.id]);
+  const result = db.exec('SELECT id, username, employee_id, role, status, last_login, created_at FROM users WHERE id = ?', [req.user.id]);
   if (result.length === 0 || result[0].values.length === 0) {
     return res.json({ success: false, message: '用户不存在' });
   }
   const row = result[0].values[0];
+
+  // 查询最后使用的模型
+  const modelResult = db.exec(
+    'SELECT model FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1',
+    [req.user.id]
+  );
+  const lastModel = (modelResult.length > 0 && modelResult[0].values.length > 0)
+    ? modelResult[0].values[0][0]
+    : null;
+
+  // 公告（可通过环境变量 ANNOUNCEMENT 自定义）
+  const announcement = process.env.ANNOUNCEMENT || '欢迎使用公司 AI 助手，有任何问题请联系管理员';
+
   res.json({
     success: true,
     user: {
       id: row[0],
-      email: row[1],
-      name: row[2],
+      username: row[1],
+      employeeId: row[2] || '',
       role: row[3],
       status: row[4],
       lastLogin: row[5],
       createdAt: row[6]
-    }
+    },
+    lastModel,
+    announcement
   });
 });
 
@@ -305,11 +469,11 @@ app.put('/api/change-password', authMiddleware, (req, res) => {
 
 // 获取所有用户列表
 app.get('/api/admin/users', authMiddleware, adminMiddleware, (req, res) => {
-  const result = db.exec('SELECT id, email, name, role, status, last_login, created_at FROM users ORDER BY id');
+  const result = db.exec('SELECT id, username, employee_id, role, status, last_login, created_at FROM users ORDER BY id');
   const users = result.length > 0 ? result[0].values.map(row => ({
     id: row[0],
-    email: row[1],
-    name: row[2],
+    username: escapeHtml(row[1]),
+    employeeId: row[2] || '',
     role: row[3],
     status: row[4],
     lastLogin: row[5],
@@ -336,6 +500,7 @@ app.put('/api/admin/users/:id/status', authMiddleware, adminMiddleware, (req, re
   db.run('UPDATE users SET status = ? WHERE id = ?', [status, userId]);
   saveDatabase();
 
+  logAdmin(req.user, 'toggle_status', 'user', userId, 'set:' + status);
   res.json({ success: true, message: status === 'active' ? '已启用' : '已禁用' });
 });
 
@@ -355,6 +520,7 @@ app.put('/api/admin/users/:id/role', authMiddleware, adminMiddleware, (req, res)
   db.run('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
   saveDatabase();
 
+  logAdmin(req.user, 'change_role', 'user', userId, 'set:' + role);
   res.json({ success: true, message: `角色已修改为: ${role === 'admin' ? '管理员' : '普通用户'}` });
 });
 
@@ -369,6 +535,7 @@ app.delete('/api/admin/users/:id', authMiddleware, adminMiddleware, (req, res) =
   db.run('DELETE FROM users WHERE id = ?', [userId]);
   saveDatabase();
 
+  logAdmin(req.user, 'delete_user', 'user', userId, '');
   res.json({ success: true, message: '用户已删除' });
 });
 
@@ -381,6 +548,7 @@ app.put('/api/admin/users/:id/reset-password', authMiddleware, adminMiddleware, 
   db.run('UPDATE users SET password = ? WHERE id = ?', [hash, userId]);
   saveDatabase();
 
+  logAdmin(req.user, 'reset_password', 'user', userId, '密码已重置');
   res.json({ success: true, message: `密码已重置为: ${defaultPassword}` });
 });
 
@@ -418,9 +586,14 @@ app.use('/uploads', express.static(uploadDir));
 
 // ========== AI 聊天接口 ==========
 
-// 获取可用模型列表
+// 获取可用模型列表（含能力标记）
 app.get('/api/models', authMiddleware, (req, res) => {
-  res.json({ success: true, models: AI_MODELS });
+  const models = AI_MODELS.map(id => ({
+    id,
+    name: id,
+    supportsImages: IMAGE_MODELS.includes(id)
+  }));
+  res.json({ success: true, models });
 });
 
 // 发送消息并获取AI回复
@@ -432,6 +605,20 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
   }
 
   try {
+    // 每日调用次数限制
+    const today = new Date().toISOString().substring(0, 10);
+    const usageResult = db.exec('SELECT id, call_count FROM user_usage WHERE user_id = ? AND usage_date = ?', [req.user.id, today]);
+    let currentCount = 0;
+    let usageId = null;
+    if (usageResult.length > 0 && usageResult[0].values.length > 0) {
+      usageId = usageResult[0].values[0][0];
+      currentCount = usageResult[0].values[0][1];
+    }
+    const DAILY_LIMIT = 50;
+    if (currentCount >= DAILY_LIMIT) {
+      return res.json({ success: false, message: `您今日的 AI 调用次数已用完（${DAILY_LIMIT}次/天），请明天再试` });
+    }
+
     let convId = conversationId ? parseInt(conversationId) : null;
 
     // 如果有 conversationId，验证归属
@@ -441,10 +628,10 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
         return res.json({ success: false, message: '对话不存在' });
       }
     } else {
-      // 创建新对话，标题取消息前30字
-      const title = message.trim().substring(0, 30);
+      // 创建新对话，标题取消息前30字（Unicode 安全截断）
+      const safeTitle = Array.from(message.trim()).slice(0, 30).join('');
       const convModel = model || AI_MODEL;
-      db.run('INSERT INTO conversations (user_id, title, model) VALUES (?, ?, ?)', [req.user.id, title, convModel]);
+      db.run('INSERT INTO conversations (user_id, title, model) VALUES (?, ?, ?)', [req.user.id, safeTitle, convModel]);
       const idResult = db.exec('SELECT last_insert_rowid()');
       convId = idResult[0].values[0][0];
     }
@@ -526,11 +713,26 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
     const assistantMsgId = msgIds[0].values[0][0];
     const userMsgId = msgIds[0].values[1][0];
 
+    // 记录模型使用日志
+    const todayForLog = new Date().toISOString().substring(0, 10);
+    db.run('INSERT INTO model_usage_logs (user_id, user_name, model, usage_date) VALUES (?, ?, ?, ?)',
+      [req.user.id, req.user.username, convModel, todayForLog]);
+
+    // 递增每日调用次数
+    if (usageId) {
+      db.run('UPDATE user_usage SET call_count = call_count + 1, updated_at = datetime(\'now\',\'localtime\') WHERE id = ?', [usageId]);
+    } else {
+      db.run('INSERT INTO user_usage (user_id, usage_date, call_count) VALUES (?, ?, 1)', [req.user.id, today]);
+    }
+    const remaining = DAILY_LIMIT - (currentCount + 1);
+    saveDatabase();
+
     res.json({
       success: true,
       conversationId: convId,
       userMessage: { id: userMsgId, role: 'user', content: message.trim(), createdAt: now },
-      assistantMessage: { id: assistantMsgId, role: 'assistant', content: aiContent, createdAt: aiNow }
+      assistantMessage: { id: assistantMsgId, role: 'assistant', content: aiContent, createdAt: aiNow },
+      remaining
     });
   } catch (err) {
     console.error('AI Chat Error:', err.message);
@@ -538,26 +740,132 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
   }
 });
 
-// 获取对话列表
-app.get('/api/conversations', authMiddleware, (req, res) => {
-  const result = db.exec(
-    `SELECT c.id, c.title, c.model, c.created_at, c.updated_at,
-            (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS msg_count
-     FROM conversations c
-     WHERE c.user_id = ?
-     ORDER BY c.updated_at DESC`,
-    [req.user.id]
+// 仪表盘统计数据
+app.get('/api/stats', authMiddleware, (req, res) => {
+  const today = new Date().toISOString().substring(0, 10);
+
+  // 今日对话数
+  const convResult = db.exec("SELECT COUNT(*) FROM conversations WHERE date(created_at) = ?", [today]);
+  const todayConversations = (convResult.length > 0 && convResult[0].values.length > 0) ? convResult[0].values[0][0] : 0;
+
+  // 今日活跃用户数
+  const activeResult = db.exec("SELECT COUNT(DISTINCT c.user_id) FROM messages m JOIN conversations c ON m.conversation_id = c.id WHERE date(m.created_at) = ?", [today]);
+  const todayActiveUsers = (activeResult.length > 0 && activeResult[0].values.length > 0) ? activeResult[0].values[0][0] : 0;
+
+  // 各模型调用次数
+  const modelResult = db.exec("SELECT model, COUNT(*) AS cnt FROM conversations GROUP BY model ORDER BY cnt DESC");
+  const modelUsage = {};
+  if (modelResult.length > 0) {
+    modelResult[0].values.forEach(row => { modelUsage[row[0]] = row[1]; });
+  }
+
+  res.json({ success: true, todayConversations, todayActiveUsers, modelUsage });
+});
+
+// 详细用量统计（管理员）
+app.get('/api/admin/usage', authMiddleware, adminMiddleware, (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 7, 30);
+  const since = new Date(Date.now() - days * 86400000).toISOString().substring(0, 10);
+
+  // 按用户+模型+日期统计
+  const detailResult = db.exec(
+    `SELECT user_name, model, usage_date, COUNT(*) AS cnt
+     FROM model_usage_logs
+     WHERE usage_date >= ?
+     GROUP BY user_id, model, usage_date
+     ORDER BY usage_date DESC, user_name`,
+    [since]
   );
-  const conversations = result.length > 0 ? result[0].values.map(row => ({
-    id: row[0],
-    title: row[1],
-    model: row[2],
-    createdAt: row[3],
-    updatedAt: row[4],
-    messageCount: row[5]
+  const details = detailResult.length > 0 ? detailResult[0].values.map(row => ({
+    userName: row[0],
+    model: row[1],
+    date: row[2],
+    count: row[3]
   })) : [];
 
-  res.json({ success: true, conversations });
+  // 汇总
+  const summaryResult = db.exec(
+    `SELECT user_name, model, COUNT(*) AS total
+     FROM model_usage_logs
+     WHERE usage_date >= ?
+     GROUP BY user_id, model
+     ORDER BY total DESC`,
+    [since]
+  );
+  const summary = summaryResult.length > 0 ? summaryResult[0].values.map(row => ({
+    userName: row[0],
+    model: row[1],
+    total: row[2]
+  })) : [];
+
+  res.json({ success: true, details, summary, days });
+});
+
+// 获取每日剩余调用次数
+app.get('/api/usage/remaining', authMiddleware, (req, res) => {
+  const today = new Date().toISOString().substring(0, 10);
+  const result = db.exec('SELECT call_count FROM user_usage WHERE user_id = ? AND usage_date = ?', [req.user.id, today]);
+  const count = (result.length > 0 && result[0].values.length > 0) ? result[0].values[0][0] : 0;
+  res.json({ success: true, used: count, remaining: Math.max(0, 50 - count), limit: 50 });
+});
+
+// 管理员查看操作日志
+app.get('/api/admin/logs', authMiddleware, adminMiddleware, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const result = db.exec('SELECT id, admin_name, action, target_type, target_id, details, created_at FROM admin_logs ORDER BY id DESC LIMIT ?', [limit]);
+  const logs = result.length > 0 ? result[0].values.map(row => ({
+    id: row[0],
+    adminName: row[1],
+    action: row[2],
+    targetType: row[3],
+    targetId: row[4],
+    details: row[5],
+    createdAt: row[6]
+  })) : [];
+  res.json({ success: true, logs });
+});
+
+// 获取对话列表（管理员可查看全部）
+app.get('/api/conversations', authMiddleware, (req, res) => {
+  const viewAll = req.query.all === 'true' && req.user.role === 'admin';
+  if (viewAll) logAdmin(req.user, 'view_all_conversations', 'system', null, '');
+
+  let query, params;
+  if (viewAll) {
+    query = `SELECT c.id, c.title, c.model, c.created_at, c.updated_at,
+                    (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS msg_count,
+                    u.username AS user_name, c.user_id
+             FROM conversations c
+             JOIN users u ON c.user_id = u.id
+             ORDER BY c.updated_at DESC`;
+    params = [];
+  } else {
+    query = `SELECT c.id, c.title, c.model, c.created_at, c.updated_at,
+                    (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS msg_count
+             FROM conversations c
+             WHERE c.user_id = ?
+             ORDER BY c.updated_at DESC`;
+    params = [req.user.id];
+  }
+
+  const result = db.exec(query, params);
+  const conversations = result.length > 0 ? result[0].values.map(row => {
+    const conv = {
+      id: row[0],
+      title: row[1],
+      model: row[2],
+      createdAt: row[3],
+      updatedAt: row[4],
+      messageCount: row[5]
+    };
+    if (viewAll) {
+      conv.userName = row[6];
+      conv.userId = row[7];
+    }
+    return conv;
+  }) : [];
+
+  res.json({ success: true, conversations, viewAll });
 });
 
 // 获取单个对话及消息
@@ -589,13 +897,23 @@ app.get('/api/conversations/:id', authMiddleware, (req, res) => {
   res.json({ success: true, conversation, messages });
 });
 
-// 删除对话
+// 删除对话（管理员可删除任意对话）
 app.delete('/api/conversations/:id', authMiddleware, (req, res) => {
   const convId = parseInt(req.params.id);
 
-  const conv = db.exec('SELECT id FROM conversations WHERE id = ? AND user_id = ?', [convId, req.user.id]);
+  let conv;
+  if (req.user.role === 'admin') {
+    conv = db.exec('SELECT id, user_id FROM conversations WHERE id = ?', [convId]);
+  } else {
+    conv = db.exec('SELECT id, user_id FROM conversations WHERE id = ? AND user_id = ?', [convId, req.user.id]);
+  }
   if (conv.length === 0 || conv[0].values.length === 0) {
-    return res.json({ success: false, message: '对话不存在' });
+    return res.json({ success: false, message: '对话不存在或无权操作' });
+  }
+
+  const ownerId = conv[0].values[0][1];
+  if (req.user.role === 'admin' && ownerId !== req.user.id) {
+    logAdmin(req.user, 'delete_conversation', 'conversation', convId, 'owner_user_id:' + ownerId);
   }
 
   db.run('DELETE FROM messages WHERE conversation_id = ?', [convId]);

@@ -9,21 +9,23 @@
 <body>
   <div class="page-container">
     <div class="card">
-      <!-- Logo 占位 -->
       <div class="logo-placeholder">LOGO</div>
 
       <h1>创建账号</h1>
       <p class="subtitle">加入公司内部管理系统</p>
 
       <form id="signup-form">
-        <label>姓名</label>
-        <input type="text" id="name" placeholder="请输入您的姓名" required autofocus>
+        <label>工号</label>
+        <input type="text" id="employeeId" placeholder="请输入工号（格式：LT1234）" required autofocus>
 
-        <label>邮箱 / 工号</label>
-        <input type="text" id="email" placeholder="请输入邮箱或工号" required>
+        <label>用户名</label>
+        <input type="text" id="username" placeholder="请输入用户名（例如：张三）" required>
 
         <label>密码</label>
         <input type="password" id="password" placeholder="请设置密码（6位以上，需包含字母和数字）" required minlength="6">
+
+        <label>确认密码</label>
+        <input type="password" id="confirm" placeholder="请再次输入密码" required minlength="6">
 
         <div id="error" class="error"></div>
         <button type="submit">注 册</button>
@@ -38,11 +40,25 @@
       e.preventDefault();
       const errorEl = document.getElementById('error');
       errorEl.textContent = '';
+      errorEl.style.color = '#ff4d4f';
 
-      const name = document.getElementById('name').value.trim();
-      const email = document.getElementById('email').value.trim();
+      const employeeId = document.getElementById('employeeId').value.trim();
+      const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value;
+      const confirm = document.getElementById('confirm').value;
 
+      if (!/^LT\d{4}$/.test(employeeId)) {
+        errorEl.textContent = '工号格式错误，必须为 LT + 四位数字（如 LT1234）';
+        return;
+      }
+      if (username.length < 2 || username.length > 20) {
+        errorEl.textContent = '用户名长度需在 2-20 个字符之间';
+        return;
+      }
+      if (!/^[\w一-鿿]+$/.test(username)) {
+        errorEl.textContent = '用户名只能包含中文、字母、数字和下划线';
+        return;
+      }
       if (password.length < 6) {
         errorEl.textContent = '密码不能少于6位';
         return;
@@ -55,11 +71,15 @@
         errorEl.textContent = '密码必须包含至少一个数字';
         return;
       }
+      if (password !== confirm) {
+        errorEl.textContent = '两次输入的密码不一致';
+        return;
+      }
 
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password })
+        body: JSON.stringify({ username, password, employeeId })
       });
 
       const data = await res.json();
@@ -69,7 +89,6 @@
         errorEl.textContent = '注册成功！正在跳转到登录页...';
         setTimeout(() => { window.location.href = '/login.html'; }, 1500);
       } else {
-        errorEl.style.color = '#ff4d4f';
         errorEl.textContent = data.message;
       }
     });

@@ -16,13 +16,16 @@
       <p class="subtitle">欢迎回来，请登录您的账号</p>
 
       <form id="login-form">
-        <label>邮箱 / 工号</label>
-        <input type="text" id="email" placeholder="请输入邮箱或工号" required autofocus>
+        <label>工号 / 用户名</label>
+        <input type="text" id="email" placeholder="请输入工号或用户名" required autofocus>
 
         <label>密码</label>
         <input type="password" id="password" placeholder="请输入密码" required>
 
         <div id="error" class="error"></div>
+        <label class="remember-label">
+          <input type="checkbox" id="remember"> 记住我（保持登录 7 天）
+        </label>
         <button type="submit">登 录</button>
       </form>
 
@@ -43,19 +46,21 @@
 
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('password').value;
+      const remember = document.getElementById('remember').checked;
 
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, remember })
       });
 
       const data = await res.json();
 
       if (data.success) {
         localStorage.setItem('token', data.token);
-        localStorage.setItem('userName', data.name);
+        localStorage.setItem('userName', data.username);
         localStorage.setItem('userRole', data.role);
+        localStorage.setItem('employeeId', data.employeeId || '');
         window.location.href = '/dashboard.html';
       } else {
         errorEl.textContent = data.message;

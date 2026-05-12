@@ -37,7 +37,11 @@
     <section class="chat-main">
       <div class="chat-main-header" id="chat-header">
         <span id="chat-title-text">AI 助手</span>
-        <select id="model-select" class="model-select" title="选择模型"></select>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span id="usage-remaining" class="usage-remaining" title="今日剩余调用次数">剩余 50 次</span>
+          <select id="model-select" class="model-select" title="选择模型"></select>
+          <button id="export-btn" class="btn-export" title="导出对话为 Markdown" style="display:none;">📥 导出</button>
+        </div>
       </div>
 
       <div class="chat-messages" id="chat-messages">
@@ -60,7 +64,9 @@
         <input type="file" id="file-input" style="display:none" accept="image/*,.pdf,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json,.md">
         <button id="attach-btn" class="chat-attach-btn" title="上传文件">+</button>
         <textarea id="chat-input" class="chat-input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl+V 粘贴图片" disabled></textarea>
+        <span id="model-label" class="model-label" title="当前使用的模型"></span>
         <button id="send-btn" class="chat-send-btn" disabled>发送</button>
+        <button id="stop-btn" class="chat-stop-btn" style="display:none" title="停止生成">停止</button>
       </div>
     </section>
   </div>
@@ -74,14 +80,20 @@
     let conversations = [];
     let currentConversationId = null;
     let isLoading = false;
+    let abortController = null;
+    let modelList = [];
+    let isAdmin = false;
 
     const convListEl = document.getElementById('conversation-list');
     const chatMessagesEl = document.getElementById('chat-messages');
     const chatEmptyEl = document.getElementById('chat-empty');
     const chatInputEl = document.getElementById('chat-input');
     const sendBtnEl = document.getElementById('send-btn');
+    const stopBtnEl = document.getElementById('stop-btn');
     const chatLoadingEl = document.getElementById('chat-loading');
     const chatTitleEl = document.getElementById('chat-title-text');
+    const usageRemainingEl = document.getElementById('usage-remaining');
+    const modelLabelEl = document.getElementById('model-label');
     const newChatBtn = document.getElementById('new-chat-btn');
     const modelSelectEl = document.getElementById('model-select');
     const fileInputEl = document.getElementById('file-input');
@@ -96,17 +108,48 @@
         const res = await fetch('/api/models', { headers: { 'Authorization': token } });
         const data = await res.json();
         if (data.success && data.models.length > 0) {
-          selectedModel = data.models[0];
-          modelSelectEl.innerHTML = data.models.map(m =>
-            `<option value="${m}">${m}</option>`
+          modelList = data.models;
+          selectedModel = modelList[0].id;
+          modelSelectEl.innerHTML = modelList.map(m =>
+            `<option value="${m.id}">${m.name || m.id}</option>`
           ).join('');
           modelSelectEl.value = selectedModel;
+          updateModelLabel();
         }
       } catch (err) { console.error('加载模型失败', err); }
     }
 
+    function updateModelLabel() {
+      const model = modelList.find(m => m.id === selectedModel);
+      if (model) {
+        modelLabelEl.textContent = `当前模型：${model.name || model.id}`;
+      }
+    }
+
+    async function loadRemaining() {
+      try {
+        const res = await fetch('/api/usage/remaining', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (data.success) {
+          updateRemainingDisplay(data.remaining, data.limit);
+        }
+      } catch (err) { /* 忽略 */ }
+    }
+
+    function updateRemainingDisplay(remaining, limit) {
+      usageRemainingEl.textContent = `剩余 ${remaining}/${limit} 次`;
+      if (remaining <= 5) {
+        usageRemainingEl.style.color = 'var(--error)';
+      } else if (remaining <= 15) {
+        usageRemainingEl.style.color = 'var(--accent)';
+      } else {
+        usageRemainingEl.style.color = '';
+      }
+    }
+
     modelSelectEl.addEventListener('change', () => {
       selectedModel = modelSelectEl.value;
+      updateModelLabel();
     });
 
     // 文件上传
@@ -223,9 +266,10 @@
         const res = await fetch('/api/me', { headers: { 'Authorization': token } });
         if (!res.ok) { logout(); return; }
         const data = await res.json();
-        document.getElementById('user-name').textContent = data.user.name;
+        document.getElementById('user-name').textContent = data.user.username;
 
         if (data.user.role === 'admin') {
+          isAdmin = true;
           document.getElementById('topbar-nav').innerHTML =
             '<a href="/dashboard.html" class="nav-link">仪表板</a>' +
             '<a href="/chat.html" class="nav-link active">AI 助手</a>' +
@@ -235,6 +279,9 @@
 
       // 加载模型列表
       await loadModels();
+
+      // 加载剩余调用次数
+      await loadRemaining();
 
       // 启用输入
       chatInputEl.disabled = false;
@@ -252,7 +299,8 @@
 
     async function loadConversations() {
       try {
-        const res = await fetch('/api/conversations', { headers: { 'Authorization': token } });
+        const url = isAdmin ? '/api/conversations?all=true' : '/api/conversations';
+        const res = await fetch(url, { headers: { 'Authorization': token } });
         const data = await res.json();
         if (data.success) {
           conversations = data.conversations;
@@ -269,15 +317,20 @@
         return;
       }
 
-      convListEl.innerHTML = conversations.map(c => `
+      convListEl.innerHTML = conversations.map(c => {
+        const userNameTag = isAdmin && c.userName
+          ? `<span class="conv-user">${escapeHtml(c.userName)}</span>`
+          : '';
+        return `
         <div class="chat-conversation-item ${c.id === currentConversationId ? 'active' : ''}"
              onclick="selectConversation(${c.id})">
           <span class="conv-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+          ${userNameTag}
           <span class="conv-date">${formatDate(c.updatedAt)}</span>
           <button class="conv-delete" title="删除对话"
                   onclick="event.stopPropagation();deleteConversation(${c.id})">&times;</button>
         </div>
-      `).join('');
+      `}).join('');
     }
 
     async function selectConversation(convId) {
@@ -295,7 +348,9 @@
 
         chatTitleEl.textContent = data.conversation.title;
         chatEmptyEl.style.display = 'none';
-        renderMessages(data.messages);
+        document.getElementById('export-btn').style.display = '';
+        const convInfo = conversations.find(c => c.id === convId);
+        renderMessages(data.messages, convInfo ? convInfo.userName : null);
 
         // 更新URL
         history.replaceState(null, '', `?id=${convId}`);
@@ -310,10 +365,13 @@
 
       // Markdown 图片: ![alt](url)
       html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-        return `<img src="${url}" alt="${alt}" class="chat-msg-img" onclick="viewImage('${url}')" loading="lazy">`;
+        let imgHtml = `<img src="${url}" alt="${alt}" class="chat-msg-img" onclick="viewImage('${url}')" loading="lazy">`;
+        // AI 生成的图片添加复制/下载按钮
+        imgHtml += `<div class="img-actions"><button class="img-action-btn" onclick="event.stopPropagation();copyImage('${url}')" title="复制图片">📋</button><button class="img-action-btn" onclick="event.stopPropagation();downloadImage('${url}')" title="下载图片">⬇</button></div>`;
+        return imgHtml;
       });
 
-      // 引用块: > text（支持多行）
+      // 引用块: > text（支持多行，转换为可点击跳转的引用）
       html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="chat-blockquote">$1</blockquote>');
 
       // 普通换行
@@ -325,19 +383,32 @@
     function viewImage(url) {
       const overlay = document.createElement('div');
       overlay.className = 'img-lightbox';
-      overlay.innerHTML = `<img src="${url}" onclick="this.parentElement.remove()">`;
+      const img = document.createElement('img');
+      img.src = url;
+      img.addEventListener('click', () => overlay.remove());
+      overlay.appendChild(img);
       overlay.addEventListener('click', () => overlay.remove());
       document.body.appendChild(overlay);
     }
 
-    function renderMessages(messages) {
-      chatMessagesEl.innerHTML = messages.map(m => `
-        <div class="chat-message ${m.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
-          <div class="chat-message-bubble">${renderContent(m.content)}</div>
-          <div class="chat-message-time">${formatTime(m.createdAt)}</div>
-        </div>
-      `).join('');
+    function renderMessages(messages, convUserName) {
+      chatMessagesEl.innerHTML = messages.map(m =>
+        renderMessageHTML(m, convUserName)
+      ).join('');
       scrollToBottom();
+    }
+
+    function getAvatar(role, isUserMsg) {
+      if (role === 'assistant') return '<div class="chat-message-avatar avatar-ai">🤖</div>';
+      const initial = (localStorage.getItem('userName') || 'U')[0];
+      return `<div class="chat-message-avatar avatar-user">${escapeHtml(initial)}</div>`;
+    }
+
+    function getUserLabel(role, convUserName) {
+      if (role === 'user' && convUserName) {
+        return `<div class="chat-msg-user-label">${escapeHtml(convUserName)}</div>`;
+      }
+      return '';
     }
 
     async function sendMessage() {
@@ -345,6 +416,17 @@
       const hasFiles = pendingFiles.length > 0;
       if (!message && !hasFiles) return;
       if (isLoading) return;
+
+      // 检查图片与模型兼容性
+      const hasImages = pendingFiles.some(f => f.type.startsWith('image/'));
+      if (hasImages) {
+        const modelInfo = modelList.find(m => m.id === selectedModel);
+        if (modelInfo && !modelInfo.supportsImages) {
+          if (!confirm('当前模型不支持图片输入，请切换到支持图片的模型或移除图片。\n\n点击"确定"将以纯文本方式发送，点击"取消"停止发送。')) {
+            return;
+          }
+        }
+      }
 
       // 立即清空输入框
       chatInputEl.value = '';
@@ -361,8 +443,10 @@
       scrollToBottom();
 
       isLoading = true;
+      abortController = new AbortController();
       chatInputEl.disabled = true;
-      sendBtnEl.disabled = true;
+      sendBtnEl.style.display = 'none';
+      stopBtnEl.style.display = 'inline-block';
       attachBtnEl.disabled = true;
       showLoading();
 
@@ -392,7 +476,8 @@
             conversationId: currentConversationId || undefined,
             message: fullMessage,
             model: selectedModel
-          })
+          }),
+          signal: abortController.signal
         });
 
         const data = await res.json();
@@ -403,8 +488,13 @@
           chatMessagesEl.insertAdjacentHTML('beforeend',
             `<div class="chat-message chat-message-assistant"><div class="chat-message-bubble" style="color:var(--error);">❌ ${escapeHtml(data.message)}</div></div>`);
           scrollToBottom();
+          // 更新剩余次数
+          await loadRemaining();
           return;
         }
+
+        // 更新剩余次数
+        updateRemainingDisplay(data.remaining, 50);
 
         // 移除临时消息，渲染正式消息
         chatMessagesEl.lastElementChild?.remove();
@@ -414,7 +504,7 @@
           await loadConversations();
           chatMessagesEl.innerHTML =
             renderMessageHTML(data.userMessage) + renderMessageHTML(data.assistantMessage);
-          chatTitleEl.textContent = message.substring(0, 30);
+          chatTitleEl.textContent = Array.from(message).slice(0, 30).join('');
           history.replaceState(null, '', `?id=${data.conversationId}`);
         } else {
           chatMessagesEl.insertAdjacentHTML('beforeend',
@@ -425,15 +515,22 @@
 
         scrollToBottom();
       } catch (err) {
-        chatMessagesEl.lastElementChild?.remove();
-        chatMessagesEl.insertAdjacentHTML('beforeend',
-          `<div class="chat-message chat-message-assistant"><div class="chat-message-bubble" style="color:var(--error);">❌ 网络错误，请检查连接后重试</div></div>`);
-        scrollToBottom();
-        console.error('发送失败', err);
+        if (err.name === 'AbortError') {
+          // 用户主动停止，保留已发送的用户消息，不追加错误提示
+          scrollToBottom();
+        } else {
+          chatMessagesEl.lastElementChild?.remove();
+          chatMessagesEl.insertAdjacentHTML('beforeend',
+            `<div class="chat-message chat-message-assistant"><div class="chat-message-bubble" style="color:var(--error);">❌ 网络错误，请检查连接后重试</div></div>`);
+          scrollToBottom();
+          console.error('发送失败', err);
+        }
       } finally {
         isLoading = false;
+        abortController = null;
         chatInputEl.disabled = false;
-        sendBtnEl.disabled = false;
+        sendBtnEl.style.display = 'inline-block';
+        stopBtnEl.style.display = 'none';
         attachBtnEl.disabled = false;
         pendingFiles = [];
         renderFilePreview();
@@ -442,11 +539,19 @@
       }
     }
 
-    function renderMessageHTML(msg) {
+    function renderMessageHTML(msg, convUserName) {
+      const isUser = msg.role === 'user';
       return `
-        <div class="chat-message ${msg.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}">
-          <div class="chat-message-bubble">${renderContent(msg.content)}</div>
-          <div class="chat-message-time">${formatTime(msg.createdAt)}</div>
+        <div class="chat-message ${isUser ? 'chat-message-user' : 'chat-message-assistant'}">
+          ${getAvatar(msg.role)}
+          <div class="chat-message-body">
+            ${getUserLabel(msg.role, convUserName)}
+            <div class="chat-message-bubble-wrap">
+              <div class="chat-message-bubble">${renderContent(msg.content)}</div>
+              <button class="msg-quote-btn" title="引用回复" onclick="event.stopPropagation();quoteMessage(this)">↩</button>
+            </div>
+            <div class="chat-message-time">${formatTime(msg.createdAt)}</div>
+          </div>
         </div>`;
     }
 
@@ -484,6 +589,7 @@
       chatMessagesEl.innerHTML = '';
       chatEmptyEl.style.display = 'flex';
       chatTitleEl.textContent = '新对话';
+      document.getElementById('export-btn').style.display = 'none';
       renderConversationList();
       history.replaceState(null, '', '/chat.html');
       chatInputEl.focus();
@@ -491,6 +597,15 @@
 
     // 发送按钮
     sendBtnEl.addEventListener('click', sendMessage);
+
+    // 停止生成按钮
+    stopBtnEl.addEventListener('click', stopGeneration);
+
+    function stopGeneration() {
+      if (abortController) {
+        abortController.abort();
+      }
+    }
 
     // Enter发送, Shift+Enter换行
     chatInputEl.addEventListener('keydown', (e) => {
@@ -540,6 +655,81 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function quoteMessage(btn) {
+      const bubble = btn.closest('.chat-message-bubble-wrap').querySelector('.chat-message-bubble');
+      const rawText = bubble.textContent.trim();
+      const quoted = rawText.split('\n').map(line => '> ' + line).join('\n') + '\n';
+      chatInputEl.value = quoted;
+      chatInputEl.style.height = 'auto';
+      chatInputEl.style.height = Math.min(chatInputEl.scrollHeight, 120) + 'px';
+      chatInputEl.focus();
+      scrollToBottom();
+    }
+
+    async function copyImage(url) {
+      try {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+        showMessageToast('图片已复制');
+      } catch (e) {
+        // 降级：复制 URL
+        try { await navigator.clipboard.writeText(url); showMessageToast('图片 URL 已复制'); }
+        catch (e2) { alert('复制失败，请右键保存图片'); }
+      }
+    }
+
+    function downloadImage(url) {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'ai_generated_' + ts + '.png';
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // 导出对话为 Markdown
+    function exportConversation() {
+      if (!currentConversationId) { alert('请先选择一个对话'); return; }
+      const title = chatTitleEl.textContent.trim();
+      const dateStr = new Date().toISOString().substring(0, 10);
+      let md = '# ' + title + '\n\n';
+      md += '> 导出时间: ' + new Date().toLocaleString('zh-CN') + '\n\n---\n\n';
+      const msgEls = chatMessagesEl.querySelectorAll('.chat-message');
+      msgEls.forEach(el => {
+        const bubble = el.querySelector('.chat-message-bubble');
+        const time = el.querySelector('.chat-message-time');
+        const isUser = el.classList.contains('chat-message-user');
+        const role = isUser ? '**用户**' : '**AI 助手**';
+        const timeStr = time ? time.textContent.trim() : '';
+        const rawText = bubble ? bubble.textContent.trim() : '';
+        md += `### ${role} _${timeStr}_\n\n${rawText}\n\n`;
+      });
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = title.replace(/[\/\\:*?"<>|]/g, '_') + '_' + dateStr + '.md';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showMessageToast('对话已导出');
+    }
+
+    document.getElementById('export-btn').addEventListener('click', exportConversation);
+
+    function showMessageToast(msg) {
+      const toast = document.createElement('div');
+      toast.className = 'chat-toast';
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => { toast.classList.add('show'); }, 10);
+      setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 1800);
     }
 
     function logout() {

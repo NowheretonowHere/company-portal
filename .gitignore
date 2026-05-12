@@ -4,3 +4,4 @@ uploads/
 start.bat
 .claude/
 *.tmp
+.env

@@ -24,20 +24,27 @@
   </header>
 
   <main class="dashboard-main">
+    <div class="admin-tabs">
+      <button class="admin-tab active" data-tab="users">用户管理</button>
+      <button class="admin-tab" data-tab="logs">操作日志</button>
+      <button class="admin-tab" data-tab="usage">用量统计</button>
+    </div>
+
     <div class="admin-header">
-      <h2>用户管理</h2>
+      <h2 id="tab-title">用户管理</h2>
       <span class="user-count" id="user-count"></span>
     </div>
 
     <div id="message" class="admin-message"></div>
 
-    <div class="table-wrapper">
+    <!-- 用户管理表格 -->
+    <div class="table-wrapper" id="users-table-wrapper">
       <table class="user-table">
         <thead>
           <tr>
             <th>ID</th>
-            <th>姓名</th>
-            <th>邮箱</th>
+            <th>工号</th>
+            <th>用户名</th>
             <th>角色</th>
             <th>状态</th>
             <th>最后登录</th>
@@ -47,6 +54,42 @@
         </thead>
         <tbody id="user-table-body">
           <tr><td colspan="8" class="table-loading">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 用量统计表格 -->
+    <div class="table-wrapper" id="usage-table-wrapper" style="display:none;">
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>模型</th>
+            <th>调用次数</th>
+          </tr>
+        </thead>
+        <tbody id="usage-table-body">
+          <tr><td colspan="3" class="table-loading">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 操作日志表格 -->
+    <div class="table-wrapper" id="logs-table-wrapper" style="display:none;">
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>管理员</th>
+            <th>操作</th>
+            <th>目标类型</th>
+            <th>目标ID</th>
+            <th>详情</th>
+            <th>时间</th>
+          </tr>
+        </thead>
+        <tbody id="logs-table-body">
+          <tr><td colspan="7" class="table-loading">加载中...</td></tr>
         </tbody>
       </table>
     </div>
@@ -71,7 +114,7 @@
           return;
         }
         currentUserId = data.user.id;
-        document.getElementById('user-name').textContent = data.user.name;
+        document.getElementById('user-name').textContent = data.user.username;
         loadUsers();
       } catch (err) {
         window.location.href = '/login.html';
@@ -93,8 +136,8 @@
       tbody.innerHTML = data.users.map(u => `
         <tr class="${u.status === 'disabled' ? 'row-disabled' : ''}">
           <td>${u.id}</td>
-          <td>${u.name}</td>
-          <td>${u.email}</td>
+          <td>${escapeHtml(u.employeeId || '-')}</td>
+          <td>${escapeHtml(u.username)}</td>
           <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">${u.role === 'admin' ? '管理员' : '用户'}</span></td>
           <td><span class="badge ${u.status === 'active' ? 'badge-active' : 'badge-disabled'}">${u.status === 'active' ? '正常' : '已禁用'}</span></td>
           <td>${u.lastLogin || '-'}</td>
@@ -104,11 +147,11 @@
               <button class="btn-action" onclick="toggleStatus(${u.id}, '${u.status}')">
                 ${u.status === 'active' ? '禁用' : '启用'}
               </button>
-              <button class="btn-action" onclick="changeRole(${u.id}, '${u.role}', '${u.name}')">
+              <button class="btn-action" onclick="changeRole(${u.id}, '${u.role}', '${escapeHtml(u.username)}')">
                 ${u.role === 'admin' ? '改为用户' : '设为管理'}
               </button>
-              <button class="btn-action btn-reset" onclick="resetPassword(${u.id}, '${u.name}')">重置密码</button>
-              <button class="btn-action btn-danger" onclick="deleteUser(${u.id}, '${u.name}')">删除</button>
+              <button class="btn-action btn-reset" onclick="resetPassword(${u.id}, '${escapeHtml(u.username)}')">重置密码</button>
+              <button class="btn-action btn-danger" onclick="deleteUser(${u.id}, '${escapeHtml(u.username)}')">删除</button>
             ` : '<span class="text-muted">当前账号</span>'}
           </td>
         </tr>
@@ -189,6 +232,75 @@
       el.textContent = msg;
       el.classList.add('show');
       setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    // 标签切换
+    document.querySelectorAll('.admin-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.dataset.tab;
+        document.getElementById('tab-title').textContent = tab === 'users' ? '用户管理' : '操作日志';
+        document.getElementById('users-table-wrapper').style.display = tab === 'users' ? '' : 'none';
+        document.getElementById('logs-table-wrapper').style.display = tab === 'logs' ? '' : 'none';
+        document.getElementById('usage-table-wrapper').style.display = tab === 'usage' ? '' : 'none';
+        document.getElementById('user-count').style.display = tab === 'users' ? '' : 'none';
+        if (tab === 'logs') loadLogs();
+        if (tab === 'usage') loadUsage();
+      });
+    });
+
+    async function loadUsage() {
+      const tbody = document.getElementById('usage-table-body');
+      tbody.innerHTML = '<tr><td colspan="3" class="table-loading">加载中...</td></tr>';
+      try {
+        const res = await fetch('/api/admin/usage', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (!data.success) { tbody.innerHTML = '<tr><td colspan="3" class="table-loading">加载失败</td></tr>'; return; }
+        const summary = data.summary || [];
+        tbody.innerHTML = summary.length === 0
+          ? '<tr><td colspan="3" style="text-align:center;color:var(--text-light);padding:32px;">暂无数据</td></tr>'
+          : summary.map(s => `
+            <tr>
+              <td>${escapeHtml(s.userName)}</td>
+              <td><span class="badge badge-user">${escapeHtml(s.model)}</span></td>
+              <td><b>${s.total}</b> 次</td>
+            </tr>`).join('');
+      } catch (err) { tbody.innerHTML = '<tr><td colspan="3" class="table-loading">加载失败</td></tr>'; }
+    }
+
+    async function loadLogs() {
+      const tbody = document.getElementById('logs-table-body');
+      tbody.innerHTML = '<tr><td colspan="7" class="table-loading">加载中...</td></tr>';
+      try {
+        const res = await fetch('/api/admin/logs', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (!data.success) { tbody.innerHTML = '<tr><td colspan="7" class="table-loading">加载失败</td></tr>'; return; }
+        const actionMap = {
+          toggle_status: '切换状态', change_role: '修改角色', delete_user: '删除用户',
+          reset_password: '重置密码', view_all_conversations: '查看全部对话', delete_conversation: '删除对话'
+        };
+        const typeMap = { user: '用户', system: '系统', conversation: '对话' };
+        tbody.innerHTML = data.logs.length === 0
+          ? '<tr><td colspan="7" style="text-align:center;color:var(--text-light);padding:32px;">暂无操作记录</td></tr>'
+          : data.logs.map(l => `
+            <tr>
+              <td>${l.id}</td>
+              <td>${escapeHtml(l.adminName)}</td>
+              <td>${actionMap[l.action] || l.action}</td>
+              <td>${typeMap[l.targetType] || l.targetType || '-'}</td>
+              <td>${l.targetId || '-'}</td>
+              <td>${escapeHtml(l.details || '-')}</td>
+              <td>${l.createdAt || '-'}</td>
+            </tr>`).join('');
+      } catch (err) { tbody.innerHTML = '<tr><td colspan="7" class="table-loading">加载失败</td></tr>'; }
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     document.getElementById('logout-btn').addEventListener('click', () => {
