@@ -7,6 +7,12 @@ const chatProviders = {
     baseUrl: process.env.AI_API_BASE_URL || 'https://api.deepseek.com/anthropic',
     defaultModel: process.env.AI_MODEL || 'deepseek-chat',
     format: 'anthropic'
+  },
+  openrouter: {
+    key: process.env.OPENROUTER_API_KEY || '',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    defaultModel: 'openrouter/gpt-image-2',
+    format: 'openai'
   }
 };
 
@@ -31,7 +37,14 @@ const imageProviders = {
 function getChatProvider(model) {
   const m = (model || '').toLowerCase();
   if (m.includes('deepseek')) return { ...chatProviders.deepseek, name: 'deepseek' };
+  if (m.includes('openrouter')) return { ...chatProviders.openrouter, name: 'openrouter' };
   return { ...chatProviders.deepseek, name: 'deepseek' };
+}
+
+// 判断是否为 OpenRouter 图片模型
+function isOpenRouterImageModel(model) {
+  const OPENROUTER_IMAGE_MODELS = (process.env.OPENROUTER_IMAGE_MODELS || 'openrouter/gpt-image-2').split(',').map(s => s.trim());
+  return OPENROUTER_IMAGE_MODELS.includes(model);
 }
 
 // 根据模型名匹配图片供应商
@@ -303,4 +316,64 @@ async function editImage(images, prompt, options = {}) {
   };
 }
 
-module.exports = { chat, generateImage, editImage, isEditModel };
+/**
+ * OpenRouter 图片生成 — 通过 chat API + modalities 参数
+ */
+async function chatImage(prompt, options = {}) {
+  const model = options.model || 'openrouter/gpt-image-2';
+  const provider = getChatProvider(model);
+
+  if (!provider.key) {
+    throw new Error(`OpenRouter API Key 未配置，请联系管理员设置 OPENROUTER_API_KEY`);
+  }
+
+  // OpenRouter 模型 ID 映射
+  const modelMap = {
+    'openrouter/gpt-image-2': 'openai/gpt-5.4-image-2'
+  };
+  const actualModel = modelMap[model] || model;
+
+  const requestBody = {
+    model: actualModel,
+    messages: [
+      { role: 'user', content: prompt }
+    ],
+    modalities: ['image', 'text']
+  };
+
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.key}`,
+      'HTTP-Referer': 'http://192.168.110.22:3000',
+      'X-Title': 'Company AI System'
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenRouter 图片生成错误 (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  // 提取图片
+  const images = [];
+  const message = data.choices?.[0]?.message;
+  if (message?.images) {
+    for (const img of message.images) {
+      if (img.image_url?.url) {
+        images.push({ url: img.image_url.url });
+      }
+    }
+  }
+
+  return {
+    model: data.model || model,
+    images
+  };
+}
+
+module.exports = { chat, generateImage, editImage, chatImage, isEditModel, isOpenRouterImageModel };
