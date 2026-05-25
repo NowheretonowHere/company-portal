@@ -12,11 +12,8 @@ const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'company-internal-secret-2024';
 const AI_API_KEY = process.env.AI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
-const AI_MODELS = (process.env.AI_MODELS || 'deepseek-chat,qwen-image-2.0,qwen-image-edit-plus,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
-const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-image-2.0';
-const IMAGE_MODELS = (process.env.IMAGE_MODELS || 'qwen-image-2.0,qwen-image-edit-plus,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
-const OPENROUTER_IMAGE_MODELS = (process.env.OPENROUTER_IMAGE_MODELS || 'openrouter/gpt-image-2').split(',').map(s => s.trim());
+const AI_MODELS = (process.env.AI_MODELS || 'deepseek-chat,openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
+const IMAGE_MODELS = (process.env.IMAGE_MODELS || 'openai/gpt-image-2/text-to-image').split(',').map(s => s.trim());
 
 function escapeHtml(text) {
   if (text == null) return '';
@@ -655,19 +652,9 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
     const convModel = model || AI_MODEL;
     const isImageModel = IMAGE_MODELS.includes(convModel);
     const isEditModel = aiService.isEditModel(convModel);
-    const isOpenRouterImage = aiService.isOpenRouterImageModel(convModel);
 
     let aiContent;
-    if (isOpenRouterImage) {
-      // OpenRouter 图片生成（chat API + modalities）
-      const imgResult = await aiService.chatImage(message.trim(), { model: convModel });
-      if (!imgResult.images || imgResult.images.length === 0) {
-        return res.json({ success: false, message: '图片生成失败，请重试' });
-      }
-      aiContent = imgResult.images.map((img, i) =>
-        `![生成图片 ${i + 1}](${img.url})\n\n> 提示词: ${message.trim()}`
-      ).join('\n\n');
-    } else if (isImageModel) {
+    if (isImageModel) {
       if (isEditModel) {
         // 提取用户消息中上传的图片路径
         const imgPaths = [];

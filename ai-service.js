@@ -7,12 +7,6 @@ const chatProviders = {
     baseUrl: process.env.AI_API_BASE_URL || 'https://api.deepseek.com/anthropic',
     defaultModel: process.env.AI_MODEL || 'deepseek-chat',
     format: 'anthropic'
-  },
-  openrouter: {
-    key: process.env.OPENROUTER_API_KEY || '',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openrouter/gpt-image-2',
-    format: 'openai'
   }
 };
 
@@ -23,13 +17,6 @@ const imageProviders = {
     baseUrl: process.env.IMAGE_API_BASE_URL || 'https://api.atlascloud.ai/api/v1',
     defaultModel: process.env.IMAGE_MODEL || 'openai/gpt-image-2/text-to-image',
     endpoint: '/model/generateImage'
-  },
-  qwen: {
-    key: process.env.QWEN_API_KEY || '',
-    baseUrl: 'https://dashscope.aliyuncs.com',
-    defaultModel: process.env.QWEN_MODEL || 'qwen-image-2.0',
-    endpoint: '/api/v1/services/aigc/multimodal-generation/generation',
-    format: 'dashscope'
   }
 };
 
@@ -37,20 +24,12 @@ const imageProviders = {
 function getChatProvider(model) {
   const m = (model || '').toLowerCase();
   if (m.includes('deepseek')) return { ...chatProviders.deepseek, name: 'deepseek' };
-  if (m.includes('openrouter')) return { ...chatProviders.openrouter, name: 'openrouter' };
   return { ...chatProviders.deepseek, name: 'deepseek' };
-}
-
-// 判断是否为 OpenRouter 图片模型
-function isOpenRouterImageModel(model) {
-  const OPENROUTER_IMAGE_MODELS = (process.env.OPENROUTER_IMAGE_MODELS || 'openrouter/gpt-image-2').split(',').map(s => s.trim());
-  return OPENROUTER_IMAGE_MODELS.includes(model);
 }
 
 // 根据模型名匹配图片供应商
 function getImageProvider(model) {
   const m = (model || '').toLowerCase();
-  if (m.includes('qwen')) return { ...imageProviders.qwen, name: 'qwen' };
   if (m.includes('atlascloud') || m.includes('gpt-image')) return { ...imageProviders.atlascloud, name: 'atlascloud' };
   return { ...imageProviders.atlascloud, name: 'atlascloud' };
 }
@@ -154,44 +133,16 @@ async function generateImage(prompt, options = {}) {
     throw new Error(`图片 API Key 未配置 (${provider.name})，请联系管理员设置环境变量`);
   }
 
-  let requestBody, headers;
-  if (provider.format === 'dashscope') {
-    // 阿里云百炼原生格式 (multimodal-generation)
-    requestBody = {
-      model,
-      input: {
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { text: prompt }
-            ]
-          }
-        ]
-      },
-      parameters: {
-        size: (options.size || '1024*1024').replace('x', '*'),
-        n: options.n || 1
-      }
-    };
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.key}`,
-      'X-DashScope-Async': 'disable'
-    };
-  } else {
-    // OpenAI 兼容格式 (AtlasCloud 等)
-    requestBody = {
-      model,
-      prompt: prompt,
-      n: options.n || 1,
-      size: options.size || '1024x1024'
-    };
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.key}`
-    };
-  }
+  const requestBody = {
+    model,
+    prompt: prompt,
+    n: options.n || 1,
+    size: options.size || '1024x1024'
+  };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${provider.key}`
+  };
 
   const response = await fetch(`${provider.baseUrl}${provider.endpoint}`, {
     method: 'POST',
@@ -206,22 +157,6 @@ async function generateImage(prompt, options = {}) {
 
   const data = await response.json();
 
-  // 解析不同格式的响应
-  if (provider.format === 'dashscope') {
-    // 从 multimodal-generation 响应中提取图片URL
-    const choices = data.output?.choices || [];
-    const images = [];
-    for (const choice of choices) {
-      const content = choice.message?.content || [];
-      for (const part of content) {
-        if (part.image) {
-          images.push({ url: part.image });
-        }
-      }
-    }
-    return { model, images };
-  }
-
   return {
     model: data.model || model,
     images: (data.data || []).map(img => ({
@@ -232,54 +167,31 @@ async function generateImage(prompt, options = {}) {
 }
 
 /**
- * Edit image — 多供应商自动路由。
- * 支持 AtlasCloud (OpenAI 兼容) 和 百炼 (DashScope 原生)。
+ * Edit image — OpenAI 兼容格式。
  */
 async function editImage(images, prompt, options = {}) {
   if (!images || images.length === 0) {
     throw new Error('至少需要一张图片');
   }
 
-  const model = options.model || 'qwen-image-edit-plus';
+  const model = options.model || imageProviders.atlascloud.defaultModel;
   const provider = getImageProvider(model);
 
   if (!provider.key) {
     throw new Error(`图片 API Key 未配置 (${provider.name})，请联系管理员设置环境变量`);
   }
 
-  let requestBody, headers, url;
-
-  if (provider.format === 'dashscope') {
-    // 百炼原生格式：image + text 放在一个 content 数组中
-    const contentParts = images.map(img => ({ image: img }));
-    contentParts.push({ text: prompt });
-    requestBody = {
-      model,
-      input: {
-        messages: [{ role: 'user', content: contentParts }]
-      },
-      parameters: { size: (options.size || '1024*1024').replace('x', '*') }
-    };
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.key}`,
-      'X-DashScope-Async': 'disable'
-    };
-    url = `${provider.baseUrl}${provider.endpoint}`;
-  } else {
-    // AtlasCloud / OpenAI 兼容格式
-    requestBody = {
-      model,
-      images: images,
-      prompt: prompt,
-      size: options.size || '1024x1024'
-    };
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.key}`
-    };
-    url = `${provider.baseUrl}/model/editImage`;
-  }
+  const requestBody = {
+    model,
+    images: images,
+    prompt: prompt,
+    size: options.size || '1024x1024'
+  };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${provider.key}`
+  };
+  const url = `${provider.baseUrl}/model/editImage`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -294,19 +206,6 @@ async function editImage(images, prompt, options = {}) {
 
   const data = await response.json();
 
-  // 解析不同格式的响应
-  if (provider.format === 'dashscope') {
-    const choices = data.output?.choices || [];
-    const resultImages = [];
-    for (const choice of choices) {
-      const content = choice.message?.content || [];
-      for (const part of content) {
-        if (part.image) resultImages.push({ url: part.image });
-      }
-    }
-    return { model, images: resultImages };
-  }
-
   return {
     model: data.model,
     images: (data.data || []).map(img => ({
@@ -316,64 +215,4 @@ async function editImage(images, prompt, options = {}) {
   };
 }
 
-/**
- * OpenRouter 图片生成 — 通过 chat API + modalities 参数
- */
-async function chatImage(prompt, options = {}) {
-  const model = options.model || 'openrouter/gpt-image-2';
-  const provider = getChatProvider(model);
-
-  if (!provider.key) {
-    throw new Error(`OpenRouter API Key 未配置，请联系管理员设置 OPENROUTER_API_KEY`);
-  }
-
-  // OpenRouter 模型 ID 映射
-  const modelMap = {
-    'openrouter/gpt-image-2': 'openai/gpt-5.4-image-2'
-  };
-  const actualModel = modelMap[model] || model;
-
-  const requestBody = {
-    model: actualModel,
-    messages: [
-      { role: 'user', content: prompt }
-    ],
-    modalities: ['image', 'text']
-  };
-
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.key}`,
-      'HTTP-Referer': 'http://192.168.110.22:3000',
-      'X-Title': 'Company AI System'
-    },
-    body: JSON.stringify(requestBody)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenRouter 图片生成错误 (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  // 提取图片
-  const images = [];
-  const message = data.choices?.[0]?.message;
-  if (message?.images) {
-    for (const img of message.images) {
-      if (img.image_url?.url) {
-        images.push({ url: img.image_url.url });
-      }
-    }
-  }
-
-  return {
-    model: data.model || model,
-    images
-  };
-}
-
-module.exports = { chat, generateImage, editImage, chatImage, isEditModel, isOpenRouterImageModel };
+module.exports = { chat, generateImage, editImage, isEditModel };
