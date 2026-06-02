@@ -14,7 +14,7 @@
       <span class="brand-name">公司内部系统</span>
     </div>
     <nav class="topbar-nav" id="topbar-nav">
-      <a href="/chat.html" class="nav-link">AI 助手</a>
+      <a href="/chat.html" class="nav-ai-btn">🤖 AI 助手</a>
     </nav>
     <div class="topbar-right">
       <span class="user-name" id="user-name">加载中...</span>
@@ -27,6 +27,7 @@
     <div class="welcome-card">
       <h2>欢迎回来，<span id="welcome-name">...</span></h2>
       <p>这是您的仪表板首页，查看使用情况和快捷入口。</p>
+      <a href="/chat.html" class="welcome-cta"><span class="cta-icon">🤖</span> 进入 AI 助手</a>
     </div>
 
     <!-- 统计卡片行 -->
@@ -97,14 +98,15 @@
 
     <!-- 快捷操作 -->
     <div class="info-cards" style="margin-top:20px;">
+      <div class="info-card quick-action quick-action-ai" onclick="window.location.href='/chat.html'">
+        <span class="card-badge">🔥 热门</span>
+        <h3>🤖 AI 助手</h3>
+        <p>与 AI 智能助手对话，生成图片、编辑图片、智能问答</p>
+        <span class="card-arrow">&rarr;</span>
+      </div>
       <div class="info-card quick-action" onclick="window.location.href='/admin.html'" id="admin-entry" style="display:none;">
         <h3>用户管理</h3>
         <p>管理所有用户账号，启用/禁用用户，重置密码</p>
-        <span class="card-arrow">&rarr;</span>
-      </div>
-      <div class="info-card quick-action" onclick="window.location.href='/chat.html'">
-        <h3>AI 助手</h3>
-        <p>与 AI 智能助手对话，获取帮助和建议</p>
         <span class="card-arrow">&rarr;</span>
       </div>
       <div class="info-card quick-action" id="change-pwd-card">
@@ -114,6 +116,12 @@
       </div>
     </div>
   </main>
+
+  <!-- AI 助手浮动快捷按钮 -->
+  <a href="/chat.html" class="fab-ai" title="进入 AI 助手">
+    🤖
+    <span class="fab-tooltip">AI 助手</span>
+  </a>
 
   <!-- 修改密码弹窗 -->
   <div class="modal-overlay" id="pwd-modal">
@@ -170,7 +178,7 @@
 
         if (user.role === 'admin') {
           document.getElementById('topbar-nav').innerHTML =
-            '<a href="/chat.html" class="nav-link">AI 助手</a>' +
+            '<a href="/chat.html" class="nav-ai-btn">🤖 AI 助手</a>' +
             '<a href="/admin.html" class="nav-link">用户管理</a>';
           document.getElementById('admin-entry').style.display = 'block';
         }

@@ -14,7 +14,7 @@
     </div>
     <nav class="topbar-nav">
       <a href="/dashboard.html" class="nav-link">仪表板</a>
-      <a href="/chat.html" class="nav-link">AI 助手</a>
+      <a href="/chat.html" class="nav-ai-btn">🤖 AI 助手</a>
       <a href="/admin.html" class="nav-link active">用户管理</a>
     </nav>
     <div class="topbar-right">
@@ -28,6 +28,7 @@
       <button class="admin-tab active" data-tab="users">用户管理</button>
       <button class="admin-tab" data-tab="logs">操作日志</button>
       <button class="admin-tab" data-tab="usage">用量统计</button>
+      <button class="admin-tab" data-tab="knowledge">资料库管理</button>
     </div>
 
     <div class="admin-header">
@@ -92,6 +93,93 @@
           <tr><td colspan="7" class="table-loading">加载中...</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- 资料库管理 -->
+    <div id="knowledge-wrapper" style="display:none;">
+      <div class="kb-toolbar">
+        <input type="text" id="kb-search" class="kb-search-input" placeholder="搜索资料标题、内容或标签...">
+        <select id="kb-category-filter" class="kb-category-select">
+          <option value="">全部分类</option>
+        </select>
+        <button id="kb-add-btn" class="btn-primary btn-sm">+ 添加资料</button>
+      </div>
+      <div class="table-wrapper">
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th style="width:60px;">ID</th>
+              <th>标题</th>
+              <th style="width:80px;">分类</th>
+              <th style="width:120px;">标签</th>
+              <th style="width:100px;">创建者</th>
+              <th style="width:100px;">更新时间</th>
+              <th style="width:120px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="kb-table-body">
+            <tr><td colspan="7" class="table-loading">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="kb-pagination" id="kb-pagination"></div>
+    </div>
+
+    <!-- 资料编辑弹窗 -->
+    <div class="modal-overlay" id="kb-modal" style="display:none;">
+      <div class="modal-content kb-modal-content">
+        <div class="modal-header">
+          <h3 id="kb-modal-title">添加资料</h3>
+          <button class="modal-close" onclick="closeKbModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <!-- 文档上传区 -->
+          <div class="form-group" id="kb-upload-area">
+            <label>上传文档 <span class="kb-upload-hint">(pdf/docx/xlsx/pptx/txt/md/csv/json/html 等)</span></label>
+            <input type="file" id="kb-file-input" accept=".docx,.pdf,.xlsx,.xls,.pptx,.txt,.md,.csv,.json,.html,.htm,.xml,.yaml,.yml,.log,.ini,.cfg,.conf,.js,.ts,.py,.java,.c,.cpp,.css,.sql,.sh,.bat,.rst,.tex,.bib,.toml" style="display:none;">
+            <div class="kb-upload-row">
+              <button type="button" class="btn-secondary" id="kb-upload-btn">
+                <span class="kb-upload-icon">📎</span> 选择文件
+              </button>
+              <span class="kb-upload-name" id="kb-upload-name"></span>
+              <button type="button" class="kb-upload-clear" id="kb-upload-clear" style="display:none;" title="清除文件">&times;</button>
+            </div>
+            <div class="kb-upload-status" id="kb-upload-status"></div>
+          </div>
+
+          <div class="form-group">
+            <label>标题 <span class="required">*</span></label>
+            <input type="text" id="kb-edit-title" class="form-input" placeholder="资料标题" maxlength="200">
+          </div>
+          <div class="form-group">
+            <label>分类 <span class="required">*</span></label>
+            <div style="display:flex;gap:8px;">
+              <select id="kb-edit-category" class="form-input" style="flex:1;">
+                <option value="通用">通用</option>
+                <option value="产品介绍">产品介绍</option>
+                <option value="业务流程">业务流程</option>
+                <option value="技术规范">技术规范</option>
+                <option value="客户服务">客户服务</option>
+                <option value="人事行政">人事行政</option>
+                <option value="财务制度">财务制度</option>
+              </select>
+              <input type="text" id="kb-edit-category-new" class="form-input" placeholder="或输入新分类" style="flex:1;">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>标签</label>
+            <input type="text" id="kb-edit-tags" class="form-input" placeholder="多个标签用逗号分隔，如：报销,财务,审批">
+          </div>
+          <div class="form-group">
+            <label>内容 <span class="required">*</span></label>
+            <textarea id="kb-edit-content" class="form-textarea" rows="12" placeholder="输入资料内容...支持 Markdown 格式"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" onclick="closeKbModal()">取消</button>
+          <button class="btn-primary" id="kb-save-btn" onclick="saveKnowledge()">保存</button>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -235,18 +323,21 @@
     }
 
     // 标签切换
+    const tabTitles = { users: '用户管理', logs: '操作日志', usage: '用量统计', knowledge: '资料库管理' };
     document.querySelectorAll('.admin-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.admin-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const tab = btn.dataset.tab;
-        document.getElementById('tab-title').textContent = tab === 'users' ? '用户管理' : '操作日志';
+        document.getElementById('tab-title').textContent = tabTitles[tab] || tab;
         document.getElementById('users-table-wrapper').style.display = tab === 'users' ? '' : 'none';
         document.getElementById('logs-table-wrapper').style.display = tab === 'logs' ? '' : 'none';
         document.getElementById('usage-table-wrapper').style.display = tab === 'usage' ? '' : 'none';
+        document.getElementById('knowledge-wrapper').style.display = tab === 'knowledge' ? '' : 'none';
         document.getElementById('user-count').style.display = tab === 'users' ? '' : 'none';
         if (tab === 'logs') loadLogs();
         if (tab === 'usage') loadUsage();
+        if (tab === 'knowledge') loadKnowledge();
       });
     });
 
@@ -295,6 +386,262 @@
             </tr>`).join('');
       } catch (err) { tbody.innerHTML = '<tr><td colspan="7" class="table-loading">加载失败</td></tr>'; }
     }
+
+    // ========== 资料库管理 ==========
+    let kbPage = 1;
+    let kbEditingId = null;
+
+    async function loadKnowledge(page = 1) {
+      kbPage = page;
+      const search = document.getElementById('kb-search').value.trim();
+      const category = document.getElementById('kb-category-filter').value;
+      const params = new URLSearchParams({ page, pageSize: 20 });
+      if (search) params.set('search', search);
+      if (category) params.set('category', category);
+
+      try {
+        const res = await fetch(`/api/knowledge?${params}`, { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (!data.success) return;
+
+        document.getElementById('user-count').textContent = `共 ${data.total} 条资料`;
+        document.getElementById('user-count').style.display = '';
+
+        const tbody = document.getElementById('kb-table-body');
+        if (data.items.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-light);padding:32px;">暂无资料，点击"+ 添加资料"开始</td></tr>';
+        } else {
+          tbody.innerHTML = data.items.map(item => `
+            <tr>
+              <td>${item.id}</td>
+              <td class="kb-title-cell" title="${escapeHtml(item.title)}">
+                <strong>${escapeHtml(item.title)}</strong>
+              </td>
+              <td><span class="badge badge-user">${escapeHtml(item.category)}</span></td>
+              <td>${(item.tags || []).map(t => `<span class="kb-tag">${escapeHtml(t)}</span>`).join(' ')}</td>
+              <td>${escapeHtml(item.creatorName || '-')}</td>
+              <td>${item.updatedAt ? item.updatedAt.substring(0, 10) : '-'}</td>
+              <td class="action-cell">
+                <button class="btn-action" onclick="editKnowledge(${item.id})">编辑</button>
+                <button class="btn-action btn-danger" onclick="deleteKnowledge(${item.id}, '${escapeHtml(item.title)}')">删除</button>
+              </td>
+            </tr>`).join('');
+        }
+
+        // 分页
+        const totalPages = Math.ceil(data.total / data.pageSize);
+        document.getElementById('kb-pagination').innerHTML = totalPages > 1
+          ? `<button class="btn-page" ${kbPage <= 1 ? 'disabled' : ''} onclick="loadKnowledge(${kbPage - 1})">上一页</button>
+             <span class="page-info">第 ${kbPage} / ${totalPages} 页</span>
+             <button class="btn-page" ${kbPage >= totalPages ? 'disabled' : ''} onclick="loadKnowledge(${kbPage + 1})">下一页</button>`
+          : '';
+      } catch (err) {
+        console.error('加载资料失败', err);
+        document.getElementById('kb-table-body').innerHTML =
+          '<tr><td colspan="7" style="text-align:center;color:var(--error);padding:32px;">加载失败，请刷新页面重试</td></tr>';
+      }
+    }
+
+    // 加载分类列表
+    async function loadKbCategories() {
+      try {
+        const res = await fetch('/api/knowledge/categories', { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (data.success) {
+          const sel = document.getElementById('kb-category-filter');
+          sel.innerHTML = '<option value="">全部分类</option>' +
+            data.categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+        }
+      } catch (e) {}
+    }
+
+    // 搜索防抖
+    let kbSearchTimer;
+    document.getElementById('kb-search').addEventListener('input', () => {
+      clearTimeout(kbSearchTimer);
+      kbSearchTimer = setTimeout(() => loadKnowledge(1), 300);
+    });
+    document.getElementById('kb-category-filter').addEventListener('change', () => loadKnowledge(1));
+
+    // ---------- 文档上传 ----------
+    function resetKbUpload() {
+      document.getElementById('kb-file-input').value = '';
+      document.getElementById('kb-upload-name').textContent = '';
+      document.getElementById('kb-upload-clear').style.display = 'none';
+      document.getElementById('kb-upload-status').textContent = '';
+      document.getElementById('kb-upload-status').className = 'kb-upload-status';
+      document.getElementById('kb-upload-btn').disabled = false;
+    }
+
+    document.getElementById('kb-upload-btn').addEventListener('click', () => {
+      document.getElementById('kb-file-input').click();
+    });
+
+    document.getElementById('kb-file-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const uploadName = document.getElementById('kb-upload-name');
+      const uploadStatus = document.getElementById('kb-upload-status');
+      const uploadClear = document.getElementById('kb-upload-clear');
+      const uploadBtn = document.getElementById('kb-upload-btn');
+
+      uploadName.textContent = file.name;
+      uploadClear.style.display = 'inline-block';
+      uploadStatus.textContent = '正在解析文档...';
+      uploadStatus.className = 'kb-upload-status kb-upload-loading';
+      uploadBtn.disabled = true;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/knowledge/parse-file', {
+          method: 'POST',
+          headers: { 'Authorization': token },
+          body: formData
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          // 自动填入标题（如果为空）
+          const titleEl = document.getElementById('kb-edit-title');
+          if (!titleEl.value.trim()) {
+            titleEl.value = data.title || '';
+          }
+          // 自动填入内容（如果为空则覆盖，否则追加）
+          const contentEl = document.getElementById('kb-edit-content');
+          if (contentEl.value.trim()) {
+            contentEl.value = contentEl.value.trim() + '\n\n' + data.content;
+          } else {
+            contentEl.value = data.content;
+          }
+
+          uploadStatus.textContent = '✓ 文档解析成功，内容已填入编辑器';
+          uploadStatus.className = 'kb-upload-status kb-upload-success';
+        } else {
+          uploadStatus.textContent = '✗ ' + (data.message || '解析失败');
+          uploadStatus.className = 'kb-upload-status kb-upload-error';
+        }
+      } catch (err) {
+        uploadStatus.textContent = '✗ 上传失败，请检查网络连接';
+        uploadStatus.className = 'kb-upload-status kb-upload-error';
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+
+    document.getElementById('kb-upload-clear').addEventListener('click', () => {
+      resetKbUpload();
+    });
+
+    // 打开添加弹窗
+    document.getElementById('kb-add-btn').addEventListener('click', () => {
+      kbEditingId = null;
+      document.getElementById('kb-modal-title').textContent = '添加资料';
+      document.getElementById('kb-edit-title').value = '';
+      document.getElementById('kb-edit-category').value = '通用';
+      document.getElementById('kb-edit-category-new').value = '';
+      document.getElementById('kb-edit-tags').value = '';
+      document.getElementById('kb-edit-content').value = '';
+      document.getElementById('kb-save-btn').textContent = '添加';
+      resetKbUpload();
+      document.getElementById('kb-modal').style.display = 'flex';
+    });
+
+    function closeKbModal() {
+      document.getElementById('kb-modal').style.display = 'none';
+    }
+
+    // 点击弹窗背景关闭
+    document.getElementById('kb-modal').addEventListener('click', function(e) {
+      if (e.target === this) closeKbModal();
+    });
+
+    // 编辑资料
+    async function editKnowledge(id) {
+      try {
+        const res = await fetch(`/api/knowledge/${id}`, { headers: { 'Authorization': token } });
+        const data = await res.json();
+        if (!data.success) { alert(data.message); return; }
+
+        kbEditingId = id;
+        document.getElementById('kb-modal-title').textContent = '编辑资料';
+        document.getElementById('kb-edit-title').value = data.item.title;
+        document.getElementById('kb-edit-category').value = data.item.category;
+        document.getElementById('kb-edit-category-new').value = '';
+        document.getElementById('kb-edit-tags').value = (data.item.tags || []).join(', ');
+        document.getElementById('kb-edit-content').value = data.item.content;
+        document.getElementById('kb-save-btn').textContent = '保存修改';
+        resetKbUpload();
+        document.getElementById('kb-modal').style.display = 'flex';
+      } catch (err) {
+        alert('加载资料失败');
+      }
+    }
+
+    // 保存资料
+    async function saveKnowledge() {
+      const title = document.getElementById('kb-edit-title').value.trim();
+      let category = document.getElementById('kb-edit-category').value;
+      const categoryNew = document.getElementById('kb-edit-category-new').value.trim();
+      const tagsStr = document.getElementById('kb-edit-tags').value.trim();
+      const content = document.getElementById('kb-edit-content').value.trim();
+
+      if (!title) { alert('请输入标题'); return; }
+      if (!content) { alert('请输入内容'); return; }
+      if (categoryNew) category = categoryNew;
+
+      const tags = tagsStr ? tagsStr.split(/[,，]/).map(t => t.trim()).filter(Boolean) : [];
+      const sourceFile = document.getElementById('kb-upload-name').textContent.trim() || null;
+
+      const url = kbEditingId ? `/api/knowledge/${kbEditingId}` : '/api/knowledge';
+      const method = kbEditingId ? 'PUT' : 'POST';
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json', 'Authorization': token },
+          body: JSON.stringify({ title, content, category, tags, source_file: sourceFile })
+        });
+        const data = await res.json();
+        if (data.success) {
+          closeKbModal();
+          showMessage(data.message);
+          loadKnowledge(kbEditingId ? kbPage : 1);
+          loadKbCategories(); // 刷新分类列表
+        } else {
+          alert(data.message);
+        }
+      } catch (err) {
+        alert('保存失败，请重试');
+      }
+    }
+
+    // 删除资料
+    async function deleteKnowledge(id, title) {
+      if (!confirm(`确定要删除资料「${title}」吗？\n此操作不可撤销！`)) return;
+
+      try {
+        const res = await fetch(`/api/knowledge/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': token }
+        });
+        const data = await res.json();
+        if (data.success) {
+          showMessage(data.message);
+          loadKnowledge(kbPage);
+          loadKbCategories();
+        } else {
+          alert(data.message);
+        }
+      } catch (err) {
+        alert('删除失败，请重试');
+      }
+    }
+
+    // 初始化知识库功能
+    loadKbCategories();
 
     function escapeHtml(text) {
       if (!text) return '';

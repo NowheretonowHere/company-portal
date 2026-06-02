@@ -121,6 +121,20 @@ function createTables() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS knowledge_base (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT '通用',
+      tags TEXT DEFAULT '',
+      source_file TEXT DEFAULT NULL,
+      created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
   saveDatabase();
   console.log('数据库已初始化');
 }
@@ -193,6 +207,12 @@ function migrateDatabase() {
   try {
     db.run("CREATE TABLE IF NOT EXISTS model_usage_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, user_name TEXT NOT NULL, model TEXT NOT NULL, usage_date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
   } catch (e) { /* 表已存在 */ }
+  try {
+    db.run("CREATE TABLE IF NOT EXISTS knowledge_base (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, content TEXT NOT NULL, category TEXT NOT NULL DEFAULT '通用', tags TEXT DEFAULT '', created_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL)");
+  } catch (e) { /* 表已存在 */ }
+  try {
+    db.run('ALTER TABLE knowledge_base ADD COLUMN source_file TEXT DEFAULT NULL');
+  } catch (e) { /* 字段已存在 */ }
   // 修复已存在的乱码标题（从第一条用户消息重新生成）
   try {
     const garbled = db.exec("SELECT c.id, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1) AS first_msg FROM conversations c WHERE instr(c.title, char(0xFFFD)) > 0");
@@ -579,6 +599,36 @@ app.post('/api/upload', authMiddleware, upload.array('files', 5), (req, res) => 
   res.json({ success: true, files });
 });
 
+// ========== 文档解析上传（资料库用） ==========
+const parseUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 } // 20MB
+});
+
+app.post('/api/knowledge/parse-file', authMiddleware, adminMiddleware, parseUpload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.json({ success: false, message: '没有上传文件' });
+  }
+
+  const documentParser = require('./document-parser');
+
+  try {
+    const { title, content } = await documentParser.parseDocument(
+      req.file.buffer,
+      req.file.originalname
+    );
+
+    if (!content || !content.trim()) {
+      return res.json({ success: false, message: '文件中未提取到可读文本内容' });
+    }
+
+    res.json({ success: true, title, content });
+  } catch (err) {
+    console.error('文档解析失败:', err.message);
+    res.json({ success: false, message: err.message || '文件解析失败，请确认文件格式正确且未损坏' });
+  }
+});
+
 // 提供上传文件访问
 app.use('/uploads', express.static(uploadDir));
 
@@ -648,6 +698,12 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
       ? histResult[0].values.map(row => ({ role: row[0], content: row[1] }))
       : [];
 
+    // 检索公司资料库，注入相关业务上下文
+    const kbContext = await searchKnowledgeBase(message.trim());
+    const enrichedHistory = kbContext
+      ? [{ role: 'system', content: kbContext }, ...history]
+      : history;
+
     // 调用AI - 检测图片模型
     const convModel = model || AI_MODEL;
     const isImageModel = IMAGE_MODELS.includes(convModel);
@@ -693,7 +749,7 @@ app.post('/api/chat', authMiddleware, async (req, res) => {
         ).join('\n\n');
       }
     } else {
-      const aiResponse = await aiService.chat(history, { model: convModel });
+      const aiResponse = await aiService.chat(enrichedHistory, { model: convModel });
       aiContent = aiResponse.content;
     }
 
@@ -943,6 +999,295 @@ app.patch('/api/conversations/:id/title', authMiddleware, (req, res) => {
 
   res.json({ success: true, message: '标题已更新' });
 });
+
+// ========== 公司资料库 API ==========
+
+// 获取资料列表（所有登录用户可查看）
+app.get('/api/knowledge', authMiddleware, (req, res) => {
+  const search = req.query.search || '';
+  const category = req.query.category || '';
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize) || 20));
+  const offset = (page - 1) * pageSize;
+
+  let where = [];
+  let params = [];
+
+  if (search) {
+    where.push('(k.title LIKE ? OR k.content LIKE ? OR k.tags LIKE ?)');
+    const like = '%' + search + '%';
+    params.push(like, like, like);
+  }
+  if (category) {
+    where.push('k.category = ?');
+    params.push(category);
+  }
+
+  const whereClause = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
+
+  // 总数
+  const countResult = db.exec(
+    `SELECT COUNT(*) FROM knowledge_base k ${whereClause}`,
+    params
+  );
+  const total = (countResult.length > 0 && countResult[0].values.length > 0)
+    ? countResult[0].values[0][0] : 0;
+
+  // 列表
+  const listResult = db.exec(
+    `SELECT k.id, k.title, k.category, k.tags, k.created_by, u.username AS creator_name,
+            k.created_at, k.updated_at
+     FROM knowledge_base k
+     LEFT JOIN users u ON k.created_by = u.id
+     ${whereClause}
+     ORDER BY k.updated_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+
+  const items = (listResult.length > 0 && listResult[0].values.length > 0)
+    ? listResult[0].values.map(row => ({
+        id: row[0],
+        title: row[1],
+        category: row[2],
+        tags: row[3] ? row[3].split(',').map(t => t.trim()).filter(Boolean) : [],
+        createdBy: row[4],
+        creatorName: row[5],
+        createdAt: row[6],
+        updatedAt: row[7]
+      }))
+    : [];
+
+  res.json({ success: true, items, total, page, pageSize });
+});
+
+// 获取资料分类列表
+app.get('/api/knowledge/categories', authMiddleware, (req, res) => {
+  const result = db.exec('SELECT DISTINCT category FROM knowledge_base ORDER BY category');
+  const categories = (result.length > 0 && result[0].values.length > 0)
+    ? result[0].values.map(row => row[0])
+    : ['通用'];
+  res.json({ success: true, categories });
+});
+
+// 获取单条资料详情（包含完整内容）
+app.get('/api/knowledge/:id', authMiddleware, (req, res) => {
+  const id = parseInt(req.params.id);
+  const result = db.exec(
+    `SELECT k.id, k.title, k.content, k.category, k.tags, k.created_by, u.username AS creator_name,
+            k.created_at, k.updated_at
+     FROM knowledge_base k
+     LEFT JOIN users u ON k.created_by = u.id
+     WHERE k.id = ?`,
+    [id]
+  );
+
+  if (result.length === 0 || result[0].values.length === 0) {
+    return res.json({ success: false, message: '资料不存在' });
+  }
+
+  const row = result[0].values[0];
+  const item = {
+    id: row[0],
+    title: row[1],
+    content: row[2],
+    category: row[3],
+    tags: row[4] ? row[4].split(',').map(t => t.trim()).filter(Boolean) : [],
+    createdBy: row[5],
+    creatorName: row[6],
+    createdAt: row[7],
+    updatedAt: row[8]
+  };
+
+  res.json({ success: true, item });
+});
+
+// 新增资料（仅管理员）
+app.post('/api/knowledge', authMiddleware, adminMiddleware, (req, res) => {
+  const { title, content, category, tags } = req.body;
+
+  if (!title || !title.trim()) {
+    return res.json({ success: false, message: '标题不能为空' });
+  }
+  if (!content || !content.trim()) {
+    return res.json({ success: false, message: '内容不能为空' });
+  }
+  if (title.length > 200) {
+    return res.json({ success: false, message: '标题不能超过200个字符' });
+  }
+
+  const tagStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+  const cat = (category || '通用').trim();
+  const sourceFile = req.body.source_file || null;
+
+  db.run(
+    'INSERT INTO knowledge_base (title, content, category, tags, source_file, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+    [title.trim(), content.trim(), cat, tagStr, sourceFile, req.user.id]
+  );
+  saveDatabase();
+
+  const idResult = db.exec('SELECT last_insert_rowid()');
+  const newId = idResult[0].values[0][0];
+
+  logAdmin(req.user, 'create_knowledge', 'knowledge', newId, '标题:' + title.trim());
+  res.json({ success: true, message: '资料已添加', id: newId });
+});
+
+// 更新资料（仅管理员）
+app.put('/api/knowledge/:id', authMiddleware, adminMiddleware, (req, res) => {
+  const id = parseInt(req.params.id);
+  const { title, content, category, tags } = req.body;
+
+  const exist = db.exec('SELECT id FROM knowledge_base WHERE id = ?', [id]);
+  if (exist.length === 0 || exist[0].values.length === 0) {
+    return res.json({ success: false, message: '资料不存在' });
+  }
+
+  if (!title || !title.trim()) {
+    return res.json({ success: false, message: '标题不能为空' });
+  }
+  if (!content || !content.trim()) {
+    return res.json({ success: false, message: '内容不能为空' });
+  }
+
+  const tagStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+  const cat = (category || '通用').trim();
+  const sourceFile = req.body.source_file !== undefined ? req.body.source_file : null;
+
+  db.run(
+    "UPDATE knowledge_base SET title = ?, content = ?, category = ?, tags = ?, source_file = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+    [title.trim(), content.trim(), cat, tagStr, sourceFile, id]
+  );
+  saveDatabase();
+
+  logAdmin(req.user, 'update_knowledge', 'knowledge', id, '标题:' + title.trim());
+  res.json({ success: true, message: '资料已更新' });
+});
+
+// 删除资料（仅管理员）
+app.delete('/api/knowledge/:id', authMiddleware, adminMiddleware, (req, res) => {
+  const id = parseInt(req.params.id);
+
+  const exist = db.exec('SELECT id, title FROM knowledge_base WHERE id = ?', [id]);
+  if (exist.length === 0 || exist[0].values.length === 0) {
+    return res.json({ success: false, message: '资料不存在' });
+  }
+
+  db.run('DELETE FROM knowledge_base WHERE id = ?', [id]);
+  saveDatabase();
+
+  logAdmin(req.user, 'delete_knowledge', 'knowledge', id, '标题:' + exist[0].values[0][1]);
+  res.json({ success: true, message: '资料已删除' });
+});
+
+// ========== 知识库检索辅助函数 ==========
+
+/**
+ * 从用户消息中提取关键词进行知识库检索
+ * 返回相关的业务资料上下文，供 AI 回复时参考
+ */
+function searchKnowledgeBase(userMessage) {
+  try {
+    // 提取关键词：去除标点，取有意义的词段
+    const cleaned = userMessage
+      .replace(/[？。，、！？…《》（）""''【】\s,.\!\?;:;'"()\[\]{}<>\/\\|@#$%^&*+=~`-]+/g, ' ')
+      .trim();
+
+    if (!cleaned || cleaned.length < 2) return null;
+
+    // 构造多个搜索词：原始消息 + 分词片段
+    const searchTerms = [];
+
+    // 1. 使用清理后的完整文本
+    if (cleaned.length >= 3) {
+      searchTerms.push(cleaned);
+    }
+
+    // 2. 按空格分词，取长度>=2的词
+    const words = cleaned.split(/\s+/).filter(w => w.length >= 2);
+    for (const w of words) {
+      if (!searchTerms.includes(w)) searchTerms.push(w);
+      // 对中文长词做2-gram
+      if (w.length >= 4 && /[一-鿿]/.test(w)) {
+        for (let i = 0; i <= w.length - 2; i++) {
+          const gram = w.substring(i, i + 2);
+          if (!searchTerms.includes(gram)) searchTerms.push(gram);
+        }
+      }
+    }
+
+    if (searchTerms.length === 0) return null;
+
+    // 构建 LIKE 查询
+    const likeClauses = searchTerms.map(() =>
+      '(k.title LIKE ? OR k.content LIKE ? OR k.tags LIKE ?)'
+    );
+    const query = `
+      SELECT k.title, k.content, k.category, k.tags,
+             (CASE WHEN k.title LIKE ? THEN 3
+                   WHEN k.tags LIKE ? THEN 2
+                   ELSE 1 END) AS relevance
+      FROM knowledge_base k
+      WHERE ${likeClauses.join(' OR ')}
+      ORDER BY relevance DESC
+      LIMIT 5
+    `;
+
+    // 准备参数
+    const params = [];
+    const firstTerm = '%' + searchTerms[0] + '%';
+    params.push(firstTerm, firstTerm); // for relevance scoring
+    for (const term of searchTerms) {
+      const like = '%' + term + '%';
+      params.push(like, like, like);
+    }
+
+    const result = db.exec(query, params);
+
+    if (result.length === 0 || result[0].values.length === 0) return null;
+
+    // 格式化上下文，限制总长度
+    const MAX_CONTEXT_LENGTH = 3000;
+    let contextParts = [];
+    let totalLength = 0;
+
+    const intro = '【公司资料库参考信息】以下是与当前问题相关的公司内部资料，请基于这些资料回答用户问题：\n\n';
+    totalLength = intro.length;
+
+    for (const row of result[0].values) {
+      const title = row[0];
+      const content = row[1];
+      const category = row[2];
+      const tags = row[3] || '';
+
+      let entry = `📄 [${category}] ${title}`;
+      if (tags) entry += ` (标签: ${tags})`;
+      entry += '\n' + content + '\n\n';
+
+      if (totalLength + entry.length > MAX_CONTEXT_LENGTH) {
+        // 截断内容以适配长度限制
+        const remaining = MAX_CONTEXT_LENGTH - totalLength - 50;
+        if (remaining > 100) {
+          entry = `📄 [${category}] ${title}`;
+          if (tags) entry += ` (标签: ${tags})`;
+          entry += '\n' + content.substring(0, remaining) + '...(内容已截断)\n\n';
+          contextParts.push(entry);
+        }
+        break;
+      }
+
+      contextParts.push(entry);
+      totalLength += entry.length;
+    }
+
+    if (contextParts.length === 0) return null;
+
+    return intro + contextParts.join('');
+  } catch (e) {
+    console.error('知识库检索失败:', e.message);
+    return null; // 检索失败不影响对话
+  }
+}
 
 // ---------- 启动 ----------
 initSqlJs().then(function (sql) {

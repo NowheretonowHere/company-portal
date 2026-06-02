@@ -14,7 +14,7 @@
     </div>
     <nav class="topbar-nav" id="topbar-nav">
       <a href="/dashboard.html" class="nav-link">仪表板</a>
-      <a href="/chat.html" class="nav-link active">AI 助手</a>
+      <a href="/chat.html" class="nav-ai-btn active">🤖 AI 助手</a>
     </nav>
     <div class="topbar-right">
       <span class="user-name" id="user-name">加载中...</span>
@@ -272,7 +272,7 @@
           isAdmin = true;
           document.getElementById('topbar-nav').innerHTML =
             '<a href="/dashboard.html" class="nav-link">仪表板</a>' +
-            '<a href="/chat.html" class="nav-link active">AI 助手</a>' +
+            '<a href="/chat.html" class="nav-ai-btn active">🤖 AI 助手</a>' +
             '<a href="/admin.html" class="nav-link">用户管理</a>';
         }
       } catch (err) { logout(); }
